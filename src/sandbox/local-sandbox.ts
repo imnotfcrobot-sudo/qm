@@ -28,7 +28,7 @@ import type {
 } from "./sandbox.ts";
 
 const DEFAULT_LOCAL_SANDBOX_IMAGE = "qm-sandbox-local:latest";
-const HOME_DIR = "/root";
+const HOME_DIR = "/home/agent";
 const WORKSPACE_BASENAME = "workspace";
 const AGENT_PORT = 8080;
 const RO_LAYERS_TAR = ".ro-layers.tar";
@@ -256,6 +256,13 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       "-p",
       `127.0.0.1:0:${AGENT_PORT}`,
       "--add-host=host.docker.internal:host-gateway",
+      "--security-opt",
+      "no-new-privileges",
+      "--cap-drop",
+      "ALL",
+      "--read-only",
+      "--tmpfs",
+      "/tmp:rw,noexec,nosuid,size=256m",
       ...(opts.cpus ? ["--cpus", String(opts.cpus)] : []),
       ...(opts.memoryMb ? ["--memory", `${opts.memoryMb}m`] : []),
       image,

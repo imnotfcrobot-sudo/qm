@@ -1336,7 +1336,7 @@ export function buildApp(
     protection: taskProtection,
     busy: () => workers.some((w) => w.busy()),
   });
-  const workers: Worker[] = Array.from({ length: Math.max(1, config.workers) }, () =>
+  const workers: Worker[] = Array.from({ length: Math.max(0, config.workers) }, () =>
     createWorker({
       runs,
       sessions,

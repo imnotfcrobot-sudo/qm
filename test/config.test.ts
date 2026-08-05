@@ -45,7 +45,7 @@ test("store kinds default to memory and accept postgres", () => {
 
 test("production and unauthenticated-core escape hatch are parsed once", () => {
   assert.throws(() => loadConfig({ NODE_ENV: "production" }), /missing or insecure required core secrets/);
-  assert.equal(loadConfig(productionEnv).production, true);
+  assert.equal(loadConfig({ ...productionEnv, HARNESS: "pi" }).production, true);
   assert.equal(loadConfig({}).production, false);
   assert.equal(loadConfig({ ALLOW_UNAUTHENTICATED_CORE: "yes" }).allowUnauthenticatedCore, true);
   assert.throws(() => loadConfig({ ALLOW_UNAUTHENTICATED_CORE: "sometimes" }), /not a recognized boolean/);
@@ -136,22 +136,11 @@ test("harness security posture defaults to auto and validates named modes", () =
   );
 });
 
-test("production names a mock harness rather than letting it pass as a real deployment", () => {
-  const warnings: string[] = [];
-  const original = console.warn;
-  console.warn = (msg: unknown) => void warnings.push(String(msg));
-  try {
-    loadConfig(productionEnv);
-    loadConfig({ ...productionEnv, HARNESS: "mock" });
-    loadConfig({ ...productionEnv, HARNESS: "pi" });
-    loadConfig({});
-  } finally {
-    console.warn = original;
-  }
-  const mock = warnings.filter((w) => w.includes("calls no model provider"));
-  assert.equal(mock.length, 2, "production + unset and production + mock each warn once");
-  assert.match(mock[0]!, /unset, which means mock/);
-  assert.match(mock[1]!, /HARNESS is "mock"/);
+test("production refuses a mock harness outright (fail-closed)", () => {
+  assert.throws(() => loadConfig(productionEnv), /unset, which means mock/);
+  assert.throws(() => loadConfig({ ...productionEnv, HARNESS: "mock" }), /HARNESS is "mock"/);
+  loadConfig({ ...productionEnv, HARNESS: "pi" });
+  loadConfig({});
 });
 
 test("a leftover *=sqlite env throws (no silent downgrade to ephemeral memory)", () => {

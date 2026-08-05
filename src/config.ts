@@ -567,11 +567,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
     }
   }
-  if (env.NODE_ENV === "production" && harnessEnvStrict(env.HARNESS) === "mock") {
-    console.warn(
-      `[config] HARNESS is ${env.HARNESS?.trim() ? '"mock"' : "unset, which means mock"} in production — this deployment answers every message with canned text and calls no model provider. Set HARNESS=pi to run real agent turns.`,
-    );
-  }
   if (env.SANDBOX_BACKEND === "sprites" && !env.SPRITES_EGRESS_PROXY_URL) {
     console.warn(
       "[config] SANDBOX_BACKEND=sprites without SPRITES_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set SPRITES_EGRESS_PROXY_URL to the public egress proxy to force sandbox traffic through it.",
@@ -588,6 +583,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const secondary = sandboxBackendEnvStrict(secondaryRaw, "SANDBOX_SECONDARY_BACKEND");
     if (secondary === sandboxBackend) throw new Error("SANDBOX_SECONDARY_BACKEND must differ from SANDBOX_BACKEND.");
     sandboxSecondaryBackend = secondary;
+  }
+  if (env.NODE_ENV === "production" && harnessEnvStrict(env.HARNESS) === "mock") {
+    throw new Error(
+      `[config] HARNESS is ${env.HARNESS?.trim() ? '"mock"' : "unset, which means mock"} in production — refusing to boot: a mock harness answers every message with canned text and calls no model provider. Set HARNESS=pi to run real agent turns.`,
+    );
   }
   const securityScreenBackend = securityScreenBackendEnvStrict(env.SECURITY_SCREEN_BACKEND);
   const proxyProvider = env.SECURITY_SCREEN_PROXY_PROVIDER?.trim();
