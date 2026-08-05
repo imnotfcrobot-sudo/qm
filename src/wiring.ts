@@ -695,17 +695,16 @@ export function buildApp(
   const refreshCustomProviders = async () => {
     const enabled = await customProviders.enabled();
     const json = JSON.stringify(enabled);
-    if (json !== appliedCustomProvidersJson) {
-      appliedCustomProvidersJson = json;
-      setCustomProviders(enabled);
-    }
-    return enabled;
+    if (json === appliedCustomProvidersJson) return;
+    appliedCustomProvidersJson = json;
+    setCustomProviders(enabled);
   };
   void refreshCustomProviders().catch((e) =>
     console.error("[wiring] custom provider hydration failed:", errMessage(e)),
   );
   const resolveModelProviderKeys = async () => {
-    const enabledCustom = await refreshCustomProviders();
+    await refreshCustomProviders();
+    const enabledCustom = await customProviders.enabled();
     const [anthropic, openai, openrouter] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
