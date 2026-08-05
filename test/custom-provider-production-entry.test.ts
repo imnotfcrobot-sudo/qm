@@ -8,13 +8,12 @@ import { createHmac } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
 import { mintSignedPayload } from "../src/auth/signed-token.ts";
 
-const URL = process.env.DATABASE_URL;
-const QUAL_DB = process.env.QM_QUAL_DB_NAME ?? "";
-const skip = !URL
-  ? "set DATABASE_URL (a Postgres) to run production-entry integration tests"
-  : !/^(qm_qual|qm_test|disposable)/.test(new globalThis.URL(URL).pathname.slice(1)) && !QUAL_DB.startsWith("disposable")
-    ? "DATABASE_URL must point at a disposable qualification database (name starting with qm_qual/qm_test/disposable)"
-    : false;
+const SERVER_URL = process.env.DATABASE_URL;
+const skip = !SERVER_URL
+  ? "set DATABASE_URL (a Postgres server) to run production-entry integration tests"
+  : false;
+let URL = SERVER_URL ?? "";
+let qualDbName = "";
 
 const SIGNING_SECRET = "qual-signing-secret-0123456789abcdef0123456789abcdef";
 const CAPABILITY_SECRET = "qual-capability-secret-0123456789abcdef0123456789a";
@@ -82,8 +81,15 @@ async function boot(): Promise<void> {
     HARNESS: "pi",
     SANDBOX_BACKEND: "local",
   };
+  const stderrChunks: string[] = [];
+  let stderrLen = 0;
   child = spawn(process.execPath, ["src/index.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
-  child.stderr!.on("data", () => {});
+  child.stderr!.on("data", (chunk) => {
+    const text = String(chunk);
+    if (stderrLen + text.length > 16_384) return;
+    stderrLen += text.length;
+    stderrChunks.push(text);
+  });
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("core did not start in 30s")), 30_000);
     child!.stdout!.on("data", (chunk) => {
@@ -94,7 +100,15 @@ async function boot(): Promise<void> {
     });
     child!.on("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error(`core exited early with code ${code}`));
+      const stderr = stderrChunks
+        .join("")
+        .replaceAll(SIGNING_SECRET, "<redacted>")
+        .replaceAll(CAPABILITY_SECRET, "<redacted>")
+        .replaceAll(PORTAL_SECRET, "<redacted>")
+        .replaceAll(CONNECTOR_KEY, "<redacted>")
+        .replaceAll(SKILL_KEY, "<redacted>")
+        .slice(0, 2_000);
+      reject(new Error(`core exited early with code ${code}; stderr (truncated): ${stderr}`));
     });
   });
 }
@@ -121,21 +135,29 @@ before(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "qm-prod-entry-"));
   created.push(dataDir);
   const pg = (await import("pg")).default;
-  const pool = new pg.Pool({ connectionString: URL });
+  qualDbName = `qm_qual_entry_${Math.random().toString(16).slice(2, 10)}`;
+  const admin = new pg.Pool({ connectionString: SERVER_URL });
   try {
-    await pool.query("DROP TABLE IF EXISTS custom_model_providers CASCADE");
-    await pool.query(
-      "DO $$ BEGIN IF to_regclass('durable_map_versions') IS NOT NULL THEN DELETE FROM durable_map_versions WHERE tbl = 'custom_model_providers'; END IF; END $$",
-    );
+    await admin.query(`CREATE DATABASE ${qualDbName}`);
   } finally {
-    await pool.end();
+    await admin.end();
   }
+  URL = `${(SERVER_URL ?? "").replace(/\/[^/]*$/, "")}/${qualDbName}`;
   await boot();
 });
 
 after(async () => {
   await stop();
   for (const dir of created) rmSync(dir, { recursive: true, force: true });
+  if (qualDbName) {
+    const pg = (await import("pg")).default;
+    const admin = new pg.Pool({ connectionString: SERVER_URL });
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS ${qualDbName}`);
+    } finally {
+      await admin.end();
+    }
+  }
 });
 
 const SPEC = {
