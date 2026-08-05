@@ -9,7 +9,12 @@ import { createServer as createNetServer } from "node:net";
 import { mintSignedPayload } from "../src/auth/signed-token.ts";
 
 const URL = process.env.DATABASE_URL;
-const skip = URL ? false : "set DATABASE_URL (a Postgres) to run production-entry integration tests";
+const QUAL_DB = process.env.QM_QUAL_DB_NAME ?? "";
+const skip = !URL
+  ? "set DATABASE_URL (a Postgres) to run production-entry integration tests"
+  : !/^(qm_qual|qm_test|disposable)/.test(new globalThis.URL(URL).pathname.slice(1)) && !QUAL_DB.startsWith("disposable")
+    ? "DATABASE_URL must point at a disposable qualification database (name starting with qm_qual/qm_test/disposable)"
+    : false;
 
 const SIGNING_SECRET = "qual-signing-secret-0123456789abcdef0123456789abcdef";
 const CAPABILITY_SECRET = "qual-capability-secret-0123456789abcdef0123456789a";
@@ -117,9 +122,14 @@ before(async () => {
   created.push(dataDir);
   const pg = (await import("pg")).default;
   const pool = new pg.Pool({ connectionString: URL });
-  await pool.query("DROP TABLE IF EXISTS custom_model_providers CASCADE");
-  await pool.query("DELETE FROM durable_map_versions WHERE tbl = 'custom_model_providers'").catch(() => {});
-  await pool.end();
+  try {
+    await pool.query("DROP TABLE IF EXISTS custom_model_providers CASCADE");
+    await pool.query(
+      "DO $$ BEGIN IF to_regclass('durable_map_versions') IS NOT NULL THEN DELETE FROM durable_map_versions WHERE tbl = 'custom_model_providers'; END IF; END $$",
+    );
+  } finally {
+    await pool.end();
+  }
   await boot();
 });
 
