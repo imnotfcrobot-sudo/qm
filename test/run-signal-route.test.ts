@@ -96,7 +96,7 @@ test("core route: a terminal run rejects signals with reason=terminal", async ()
   await built.runs.complete(run.id, claimed!.leaseToken!, { status: "ok", reply: "done" });
   const r = await coreSignal(run.id, { kind: "abort" });
   assert.equal(r.status, 409);
-  assert.deepEqual(r.json, { accepted: false, reason: "terminal" });
+  assert.deepEqual(r.json, { accepted: false, reason: "terminal", terminalStatus: "ok" });
 });
 
 test("web proxy: the submitting user can signal their run; others (and token-less strangers) cannot", async () => {

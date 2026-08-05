@@ -459,9 +459,9 @@ export function createTurnMethods(
       const partial = localPartial ?? (run.partialText !== null && run.partialText !== "" ? run.partialText : null);
       const firstBlock = deps.turnStream?.firstBlock(runId);
       const surfacePosted = deps.turnStream?.surfacePosted(runId) ?? false;
-      const alive = (deps.turnStream?.alive(runId) ?? false) || run.status === "running";
+      const alive = deps.turnStream?.alive(runId) ?? false;
       const replying = deps.turnStream?.replying(runId) ?? false;
-      const replyComplete = (deps.turnStream?.isReplyDone(runId) ?? false) || (run.status === "done" && run.result !== null);
+      const replyComplete = deps.turnStream?.isReplyDone(runId) ?? false;
       const activity = await deps.runActivity?.list(runId);
       const tasks = await deps.tasks?.list({ originRunId: runId });
       const stale =
@@ -472,6 +472,10 @@ export function createTurnMethods(
         startedAt: run.startedAt,
         finishedAt: run.finishedAt,
         ...(partial ? { partial } : {}),
+        ...(run.partialSeq !== null && run.partialSeq !== undefined ? { partialSeq: run.partialSeq } : {}),
+        ...(run.partialUpdatedAt !== null && run.partialUpdatedAt !== undefined
+          ? { partialUpdatedAt: run.partialUpdatedAt }
+          : {}),
         ...(firstBlock
           ? { firstBlock: firstBlock.text, ...(firstBlock.closed ? { firstBlockClosed: true } : {}) }
           : {}),
