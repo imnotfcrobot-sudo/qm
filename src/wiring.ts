@@ -691,18 +691,25 @@ export function buildApp(
     backing: artifactMap("custom_model_providers"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
+  let appliedCustomProvidersJson = "";
   const refreshCustomProviders = async () => {
-    setCustomProviders(await customProviders.enabled());
+    const enabled = await customProviders.enabled();
+    const json = JSON.stringify(enabled);
+    if (json !== appliedCustomProvidersJson) {
+      appliedCustomProvidersJson = json;
+      setCustomProviders(enabled);
+    }
+    return enabled;
   };
   void refreshCustomProviders().catch((e) =>
     console.error("[wiring] custom provider hydration failed:", errMessage(e)),
   );
   const resolveModelProviderKeys = async () => {
-    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
+    const enabledCustom = await refreshCustomProviders();
+    const [anthropic, openai, openrouter] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
       modelCredentials.resolve("openrouter"),
-      customProviders.enabled(),
     ]);
     const customKeys = Object.fromEntries(
       (
