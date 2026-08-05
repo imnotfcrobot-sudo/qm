@@ -6,6 +6,7 @@ import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import { errorParks, type Run, type RunStore } from "./run-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import { errMessage, swallow } from "../util/errors.ts";
+import { createRunPartialSink, type RunPartialSinkPolicy } from "./run-partial-sink.ts";
 import { sleep } from "../util/async.ts";
 
 export interface ProcessDeps {
@@ -13,6 +14,7 @@ export interface ProcessDeps {
   orchestrator: Orchestrator;
   leaseTtlMs: number;
   heartbeatIntervalMs?: number;
+  partialPolicy?: RunPartialSinkPolicy;
 }
 
 export const LEASE_LOST_CONSECUTIVE = 3;
@@ -55,6 +57,7 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
     beatStopped = true;
     clearInterval(beat);
   };
+  const partialSink = createRunPartialSink(deps.runs, run.id, token, deps.partialPolicy);
   try {
     const queueMs = run.startedAt !== null ? Math.max(0, run.startedAt - run.createdAt) : undefined;
     const result = await deps.orchestrator.handleTurn({
@@ -65,13 +68,16 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
       finalAttempt: errorParks(run, deps.runs.maxClaims),
       background: opts?.background ?? false,
       cancel: cancel.signal,
+      partialSink,
       ...(queueMs !== undefined ? { queueMs } : {}),
     });
     stopBeat();
+    await partialSink.close();
     await deps.runs.complete(run.id, token, result);
     return result;
   } catch (err) {
     stopBeat();
+    await partialSink.flush();
     await deps.runs.fail(run.id, token, errMessage(err), {
       retry: !(err instanceof NonRetryableTurnError),
     });

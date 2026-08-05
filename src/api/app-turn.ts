@@ -455,12 +455,13 @@ export function createTurnMethods(
       const run = await deps.runs.get(runId);
       if (!run) return null;
       if (viewer && !(await viewerMayUseRun(run, viewer))) return null;
-      const partial = deps.turnStream?.snapshot(runId);
+      const localPartial = deps.turnStream?.snapshot(runId);
+      const partial = localPartial ?? (run.partialText !== null && run.partialText !== "" ? run.partialText : null);
       const firstBlock = deps.turnStream?.firstBlock(runId);
       const surfacePosted = deps.turnStream?.surfacePosted(runId) ?? false;
-      const alive = deps.turnStream?.alive(runId) ?? false;
+      const alive = (deps.turnStream?.alive(runId) ?? false) || run.status === "running";
       const replying = deps.turnStream?.replying(runId) ?? false;
-      const replyComplete = deps.turnStream?.isReplyDone(runId) ?? false;
+      const replyComplete = (deps.turnStream?.isReplyDone(runId) ?? false) || (run.status === "done" && run.result !== null);
       const activity = await deps.runActivity?.list(runId);
       const tasks = await deps.tasks?.list({ originRunId: runId });
       const stale =
@@ -494,7 +495,12 @@ export function createTurnMethods(
       const run = await deps.runs.get(runId);
       if (!run) return { accepted: false, reason: "not_found" };
       if (viewer && !(await viewerMayUseRun(run, viewer))) return { accepted: false, reason: "not_found" };
-      if (isTerminal(run.status)) return { accepted: false, reason: "terminal" };
+      if (isTerminal(run.status))
+        return {
+          accepted: false,
+          reason: "terminal",
+          ...(run.result?.status ? { terminalStatus: run.result.status } : {}),
+        };
       if (signal.kind === "steer" && !signal.text?.trim()) {
         return { accepted: false, reason: "text_required" };
       }

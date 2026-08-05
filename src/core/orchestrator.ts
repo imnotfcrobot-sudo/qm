@@ -2178,6 +2178,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               try {
                 const stored = (() => {
                   const tainted = entry;
+                  if (tainted.type === "thinking") {
+                    const payload = (tainted.payload ?? {}) as { thinking?: unknown };
+                    const raw = typeof payload.thinking === "string" ? payload.thinking : "";
+                    return {
+                      ...tainted,
+                      payload: { thinking: "", redacted: true, chars: raw.length },
+                    };
+                  }
                   if (tainted.type !== "user") return tainted;
                   const payload =
                     typeof tainted.payload === "object" && tainted.payload !== null
@@ -2257,7 +2265,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               const now = Date.now();
               if (firstChunkAt === undefined) firstChunkAt = now;
               lastChunkAt = now;
-              if (input.runId && deps.turnStream && !input.surfaceTools) deps.turnStream.publish(input.runId, chunk);
+              if (input.runId && !input.surfaceTools) {
+                deps.turnStream?.publish(input.runId, chunk);
+                input.partialSink?.append(chunk);
+              }
               if (input.surfaceTools && spineFirstBlockOpen && spineFirstBlock.length < FIRST_BLOCK_CAPTURE_MAX_CHARS)
                 spineFirstBlock += chunk;
             },
@@ -2744,7 +2755,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           finalResult = { status: "silent", sessionId: session.id, ...(result.stopped ? { stopped: true } : {}) };
         } else {
           finalResult = {
-            status: "ok",
+            status: result.stopped ? "cancelled" : "ok",
             sessionId: session.id,
             reply,
             ...(result.stopped ? { stopped: true } : {}),

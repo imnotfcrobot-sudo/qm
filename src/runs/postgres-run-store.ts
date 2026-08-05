@@ -37,6 +37,10 @@ function rowToRun(r: Record<string, unknown>): Run {
     createdAt: Number(r.created_at),
     startedAt: r.started_at === null ? null : Number(r.started_at),
     finishedAt: r.finished_at === null ? null : Number(r.finished_at),
+    partialText: (r.partial_text as string | null) ?? null,
+    partialSeq: r.partial_seq === null || r.partial_seq === undefined ? null : Number(r.partial_seq),
+    partialUpdatedAt:
+      r.partial_updated_at === null || r.partial_updated_at === undefined ? null : Number(r.partial_updated_at),
   };
 }
 
@@ -74,6 +78,9 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       )`,
     `ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 1`,
     `ALTER TABLE tool_calls DROP CONSTRAINT IF EXISTS tool_calls_pkey`,
+    `ALTER TABLE runs ADD COLUMN IF NOT EXISTS partial_text TEXT`,
+    `ALTER TABLE runs ADD COLUMN IF NOT EXISTS partial_seq BIGINT`,
+    `ALTER TABLE runs ADD COLUMN IF NOT EXISTS partial_updated_at BIGINT`,
     `ALTER TABLE tool_calls ADD PRIMARY KEY (run_id, attempt, call_index)`,
   ]);
 
@@ -205,6 +212,16 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         return true;
       }
       return false;
+    },
+
+    async publishPartial(runId, leaseToken, seq, text, updatedAt): Promise<boolean> {
+      const { rowCount } = await q(
+        `UPDATE runs SET partial_text=$1, partial_seq=$2, partial_updated_at=$3
+         WHERE id=$4 AND lease_token=$5 AND status='running'
+           AND (partial_seq IS NULL OR partial_seq < $2)`,
+        [text, seq, updatedAt, runId, leaseToken],
+      );
+      return rowCount > 0;
     },
 
     async fail(runId, leaseToken, error, opts): Promise<{ requeued: boolean }> {

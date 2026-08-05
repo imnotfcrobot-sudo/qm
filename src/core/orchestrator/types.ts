@@ -85,6 +85,7 @@ export interface OrchestratorInput extends Omit<
   finalAttempt?: boolean;
   background?: boolean;
   cancel?: AbortSignal;
+  partialSink?: import("../../runs/run-partial-sink.ts").RunPartialSink;
   queueMs?: number;
   sessionParticipantIds?: readonly string[];
   scopeVersion?: string;

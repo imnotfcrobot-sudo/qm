@@ -471,7 +471,7 @@ export interface CommandApprovalGrant {
 }
 
 export interface TurnResult {
-  status: "ok" | "refused" | "failed" | "pending_approval" | "queued" | "silent" | "react";
+  status: "ok" | "refused" | "failed" | "pending_approval" | "queued" | "silent" | "react" | "cancelled";
   sessionId?: string;
   reply?: string;
   reactions?: string[];

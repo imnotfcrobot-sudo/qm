@@ -59,6 +59,9 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
         createdAt: Date.now(),
         startedAt: null,
         finishedAt: null,
+        partialText: null,
+        partialSeq: null,
+        partialUpdatedAt: null,
       };
       runs.set(run.id, run);
       if (dedupKey) byKey.set(dedupKey, run.id);
@@ -106,6 +109,16 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       run.leaseExpiresAt = null;
       run.finishedAt = Date.now();
       settle(run);
+      return true;
+    },
+
+    async publishPartial(runId, leaseToken, seq, text, updatedAt) {
+      const run = runs.get(runId);
+      if (!run || run.leaseToken !== leaseToken || run.status !== "running") return false;
+      if (run.partialSeq !== null && run.partialSeq !== undefined && run.partialSeq >= seq) return false;
+      run.partialText = text;
+      run.partialSeq = seq;
+      run.partialUpdatedAt = updatedAt;
       return true;
     },
 
@@ -205,6 +218,9 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
     run.workerId = workerId;
     run.attempts += 1;
     run.startedAt = run.startedAt ?? Date.now();
+    run.partialText = null;
+    run.partialSeq = null;
+    run.partialUpdatedAt = null;
     return { ...run };
   }
 
