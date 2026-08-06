@@ -116,6 +116,7 @@ export interface Config {
   memoryCaptureQuietMs: number;
   memoryCaptureMaxTurns?: number;
   workers: number;
+  runPartialPolicy: { flushIntervalMs: number; minGrowthBytes: number; maxBytes: number };
   leaseTtlMs: number;
   heartbeatIntervalMs: number;
   reaperIntervalMs: number;
@@ -449,6 +450,27 @@ function numEnvStrict(name: string, value: string | undefined): number | undefin
     throw new Error(`${name}=${JSON.stringify(value)} is not a number — set a finite numeric value, or unset it.`);
   }
   return parsed;
+}
+
+function boundedIntEnv(name: string, value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = numEnvStrict(name, value);
+  if (parsed === undefined) return fallback;
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name}=${JSON.stringify(value)} is out of range — expected an integer between ${min} and ${max}.`);
+  }
+  return parsed;
+}
+
+function runPartialPolicyFromEnv(env: NodeJS.ProcessEnv): {
+  flushIntervalMs: number;
+  minGrowthBytes: number;
+  maxBytes: number;
+} {
+  return {
+    flushIntervalMs: boundedIntEnv("RUN_PARTIAL_FLUSH_INTERVAL_MS", env.RUN_PARTIAL_FLUSH_INTERVAL_MS, 750, 100, 30_000),
+    minGrowthBytes: boundedIntEnv("RUN_PARTIAL_MIN_GROWTH_BYTES", env.RUN_PARTIAL_MIN_GROWTH_BYTES, 512, 64, 65_536),
+    maxBytes: boundedIntEnv("RUN_PARTIAL_MAX_BYTES", env.RUN_PARTIAL_MAX_BYTES, 65_536, 4_096, 262_144),
+  };
 }
 
 function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
@@ -830,6 +852,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cronFireConcurrency:
       numEnvStrict("CRON_FIRE_CONCURRENCY", env.CRON_FIRE_CONCURRENCY) ?? CONFIG_DEFAULTS.cronFireConcurrency,
     workers: numEnvStrict("WORKERS", env.WORKERS) ?? CONFIG_DEFAULTS.workers,
+    runPartialPolicy: runPartialPolicyFromEnv(env),
     leaseTtlMs: numEnvStrict("LEASE_TTL_MS", env.LEASE_TTL_MS) ?? CONFIG_DEFAULTS.leaseTtlMs,
     heartbeatIntervalMs:
       numEnvStrict("HEARTBEAT_INTERVAL_MS", env.HEARTBEAT_INTERVAL_MS) ??

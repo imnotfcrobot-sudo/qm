@@ -1346,6 +1346,9 @@ export function buildApp(
       pollMs: 250,
       canClaim: () => drain.canClaim(),
       onClaimed: () => drain.noteBusy(),
+      partialPolicy: config.runPartialPolicy,
+      onPartialError: (event) =>
+        console.warn(`[worker] partial publish ${event.kind} for run ${event.runId.slice(0, 12)}…`),
     }),
   );
   const processReaper: ProcessReaper | null = processes

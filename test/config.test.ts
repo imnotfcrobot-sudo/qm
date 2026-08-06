@@ -398,3 +398,19 @@ test("baseModelProviders constrains the base model only when a provider is decla
     "with no declaration the shipped default stands, so upgrading never moves a deployment's model or its billing",
   );
 });
+
+test("RUN_PARTIAL_* policy parses with defaults, bounds, and fail-fast", () => {
+  const def = loadConfig({});
+  assert.equal(def.runPartialPolicy.flushIntervalMs, 750);
+  assert.equal(def.runPartialPolicy.minGrowthBytes, 512);
+  assert.equal(def.runPartialPolicy.maxBytes, 65_536);
+  const custom = loadConfig({
+    RUN_PARTIAL_FLUSH_INTERVAL_MS: "1500",
+    RUN_PARTIAL_MIN_GROWTH_BYTES: "256",
+    RUN_PARTIAL_MAX_BYTES: "8192",
+  });
+  assert.deepEqual(custom.runPartialPolicy, { flushIntervalMs: 1500, minGrowthBytes: 256, maxBytes: 8192 });
+  assert.throws(() => loadConfig({ RUN_PARTIAL_FLUSH_INTERVAL_MS: "10" }), /out of range/);
+  assert.throws(() => loadConfig({ RUN_PARTIAL_MAX_BYTES: "99999999" }), /out of range/);
+  assert.throws(() => loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "abc" }), /is not a number/);
+});

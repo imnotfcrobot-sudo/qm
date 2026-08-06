@@ -1,12 +1,11 @@
 const OPEN_RE = /<think\s*>/i;
 const CLOSE_RE = /<\/think\s*>/i;
-const OPEN_CHARS = "<think>";
-const CLOSE_CHARS = "</think>";
+const PARTIAL_OPEN_RE = /^<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?\s*$/i;
+const PARTIAL_CLOSE_RE = /^<(?:\/(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?)?\s*$/i;
 
-function tagPrefixLen(text: string, tag: string): number {
-  const lower = text.toLowerCase();
-  for (let i = Math.min(tag.length, lower.length); i > 0; i--) {
-    if (tag.startsWith(lower.slice(-i))) return i;
+function holdbackLen(text: string, partialRe: RegExp): number {
+  for (let i = Math.min(16, text.length); i > 0; i--) {
+    if (partialRe.test(text.slice(-i))) return i;
   }
   return 0;
 }
@@ -28,7 +27,7 @@ export class ThinkStripper {
           this.inThink = true;
           continue;
         }
-        const hold = tagPrefixLen(this.carry, OPEN_CHARS);
+        const hold = holdbackLen(this.carry, PARTIAL_OPEN_RE);
         out += this.carry.slice(0, this.carry.length - hold);
         this.carry = this.carry.slice(this.carry.length - hold);
         break;
@@ -39,7 +38,7 @@ export class ThinkStripper {
         this.inThink = false;
         continue;
       }
-      const hold = tagPrefixLen(this.carry, CLOSE_CHARS);
+      const hold = holdbackLen(this.carry, PARTIAL_CLOSE_RE);
       this.carry = this.carry.slice(this.carry.length - hold);
       break;
     }

@@ -6,7 +6,7 @@ import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import { errorParks, type Run, type RunStore } from "./run-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import { errMessage, swallow } from "../util/errors.ts";
-import { createRunPartialSink, type RunPartialSinkPolicy } from "./run-partial-sink.ts";
+import { createRunPartialSink, type RunPartialSinkHooks, type RunPartialSinkPolicy } from "./run-partial-sink.ts";
 import { sleep } from "../util/async.ts";
 
 export interface ProcessDeps {
@@ -15,6 +15,7 @@ export interface ProcessDeps {
   leaseTtlMs: number;
   heartbeatIntervalMs?: number;
   partialPolicy?: RunPartialSinkPolicy;
+  onPartialError?: RunPartialSinkHooks["onError"];
 }
 
 export const LEASE_LOST_CONSECUTIVE = 3;
@@ -57,7 +58,9 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
     beatStopped = true;
     clearInterval(beat);
   };
-  const partialSink = createRunPartialSink(deps.runs, run.id, token, deps.partialPolicy);
+  const partialSink = createRunPartialSink(deps.runs, run.id, token, deps.partialPolicy, {
+    onError: deps.onPartialError,
+  });
   try {
     const queueMs = run.startedAt !== null ? Math.max(0, run.startedAt - run.createdAt) : undefined;
     const result = await deps.orchestrator.handleTurn({
