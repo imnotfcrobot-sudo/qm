@@ -70,10 +70,12 @@ export async function verifyOrReject(
   }
   const signature = String(req.headers["x-signature"] ?? "");
   const timestamp = Number(req.headers["x-timestamp"] ?? NaN);
+  const nonceHeader = req.headers["x-request-nonce"];
+  const nonce = typeof nonceHeader === "string" ? nonceHeader : undefined;
   const r =
     dedup && auth
-      ? await auth.verify({ signature, timestamp, body: payload, eventId: signature })
-      : verifySignature(secret, { signature, timestamp, body: payload }, Date.now(), SOURCE_AUTH_REPLAY_WINDOW_MS);
+      ? await auth.verify({ signature, timestamp, body: payload, eventId: signature, ...(nonce !== undefined ? { nonce } : {}) })
+      : verifySignature(secret, { signature, timestamp, body: payload, ...(nonce !== undefined ? { nonce } : {}) }, Date.now(), SOURCE_AUTH_REPLAY_WINDOW_MS);
   if (!r.ok) {
     sendJson(res, 401, { error: "unauthorized", message: r.reason });
     return false;
