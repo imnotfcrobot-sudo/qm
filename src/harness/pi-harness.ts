@@ -75,6 +75,7 @@ import { ELIDED_IMAGE_TEXT, planTapeSeed } from "./tape-fold.ts";
 import { compactTranscript, deterministicCompactSummary, estimateHistoryTokens } from "./context-compaction.ts";
 import { countTokens } from "../util/tokens.ts";
 import { parseSecurityScreenVerdict, SECURITY_SCREEN_SYSTEM_PROMPT } from "../security/security-posture.ts";
+import { ThinkStripper, stripThinking } from "./think-stripper.ts";
 
 export interface PiHarnessOptions {
   modelId?: string | ((scope?: ScopeId) => string | undefined);
@@ -1578,6 +1579,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                 swallow("pi: tape message append", err);
               });
           };
+          const thinkStripper = new ThinkStripper();
           const unsubscribe = entry.agentSession.subscribe((event) => {
             if (event.type === "message_end") tapeMessage((event as { message?: unknown }).message);
             if (event.type === "message_start" && (event.message as { role?: string }).role === "assistant") {
@@ -1594,7 +1596,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               turn.onTextBlockStart?.();
             } else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
               if (curFirst === undefined) curFirst = Date.now();
-              turn.onDelta?.(event.assistantMessageEvent.delta);
+              turn.onDelta?.(thinkStripper.feed(event.assistantMessageEvent.delta));
             } else if (event.type === "message_end" && (event.message as { role?: string }).role === "assistant") {
               const end = Date.now();
               const u = (event.message as { usage?: PiUsageShape }).usage;
@@ -1613,11 +1615,17 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               const stepContent = (event.message as { content?: unknown }).content;
               for (const block of thinkingBlocksFromContent(stepContent)) {
                 thinkTail = thinkTail
-                  .then(() => turn.emit({ type: "thinking", payload: block, scopeLabel: turn.scopeLabel }))
+                  .then(() =>
+                    turn.emit({
+                      type: "thinking",
+                      payload: { thinking: "", redacted: true, chars: block.thinking.length },
+                      scopeLabel: turn.scopeLabel,
+                    }),
+                  )
                   .catch(swallowAs("pi: thinking entry persist", undefined));
               }
               if (contentHasToolUse(stepContent)) {
-                const narration = textFromContent(stepContent).trim();
+                const narration = stripThinking(textFromContent(stepContent)).trim();
                 if (narration)
                   thinkTail = thinkTail
                     .then(() => turn.emit({ type: "text", payload: { text: narration }, scopeLabel: turn.scopeLabel }))
@@ -1873,7 +1881,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             );
           }
           if (userAborted) {
-            const partial = entry.agentSession.getLastAssistantText() ?? "";
+            const partial = stripThinking(entry.agentSession.getLastAssistantText() ?? "");
             const reply = partial.trim() ? partial : "(stopped)";
             const finalEntry = await turn.emit({
               type: "assistant",
@@ -1891,7 +1899,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             };
             return cacheUsage ? { ...base, cacheUsage } : base;
           }
-          const closingText = recoveryDead ? "" : (piLastAssistantTextOrThrow(entry.agentSession) ?? "");
+          const closingText = recoveryDead ? "" : stripThinking(piLastAssistantTextOrThrow(entry.agentSession) ?? "");
           const reply = entry.ref.silentRequested ? "" : closingText;
           const finalEntry = await turn.emit({
             type: "assistant",

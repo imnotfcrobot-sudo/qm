@@ -691,18 +691,24 @@ export function buildApp(
     backing: artifactMap("custom_model_providers"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
+  let appliedCustomProvidersJson = "";
   const refreshCustomProviders = async () => {
-    setCustomProviders(await customProviders.enabled());
+    const enabled = await customProviders.enabled();
+    const json = JSON.stringify(enabled);
+    if (json === appliedCustomProvidersJson) return;
+    appliedCustomProvidersJson = json;
+    setCustomProviders(enabled);
   };
   void refreshCustomProviders().catch((e) =>
     console.error("[wiring] custom provider hydration failed:", errMessage(e)),
   );
   const resolveModelProviderKeys = async () => {
-    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
+    await refreshCustomProviders();
+    const enabledCustom = await customProviders.enabled();
+    const [anthropic, openai, openrouter] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
       modelCredentials.resolve("openrouter"),
-      customProviders.enabled(),
     ]);
     const customKeys = Object.fromEntries(
       (
@@ -1330,7 +1336,7 @@ export function buildApp(
     protection: taskProtection,
     busy: () => workers.some((w) => w.busy()),
   });
-  const workers: Worker[] = Array.from({ length: Math.max(1, config.workers) }, () =>
+  const workers: Worker[] = Array.from({ length: Math.max(0, config.workers) }, () =>
     createWorker({
       runs,
       sessions,
@@ -1340,6 +1346,9 @@ export function buildApp(
       pollMs: 250,
       canClaim: () => drain.canClaim(),
       onClaimed: () => drain.noteBusy(),
+      partialPolicy: config.runPartialPolicy,
+      onPartialError: (event) =>
+        console.warn(`[worker] partial publish ${event.kind} for run ${event.runId.slice(0, 12)}…`),
     }),
   );
   const processReaper: ProcessReaper | null = processes

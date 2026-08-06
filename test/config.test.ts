@@ -45,7 +45,7 @@ test("store kinds default to memory and accept postgres", () => {
 
 test("production and unauthenticated-core escape hatch are parsed once", () => {
   assert.throws(() => loadConfig({ NODE_ENV: "production" }), /missing or insecure required core secrets/);
-  assert.equal(loadConfig(productionEnv).production, true);
+  assert.equal(loadConfig({ ...productionEnv, HARNESS: "pi" }).production, true);
   assert.equal(loadConfig({}).production, false);
   assert.equal(loadConfig({ ALLOW_UNAUTHENTICATED_CORE: "yes" }).allowUnauthenticatedCore, true);
   assert.throws(() => loadConfig({ ALLOW_UNAUTHENTICATED_CORE: "sometimes" }), /not a recognized boolean/);
@@ -136,22 +136,11 @@ test("harness security posture defaults to auto and validates named modes", () =
   );
 });
 
-test("production names a mock harness rather than letting it pass as a real deployment", () => {
-  const warnings: string[] = [];
-  const original = console.warn;
-  console.warn = (msg: unknown) => void warnings.push(String(msg));
-  try {
-    loadConfig(productionEnv);
-    loadConfig({ ...productionEnv, HARNESS: "mock" });
-    loadConfig({ ...productionEnv, HARNESS: "pi" });
-    loadConfig({});
-  } finally {
-    console.warn = original;
-  }
-  const mock = warnings.filter((w) => w.includes("calls no model provider"));
-  assert.equal(mock.length, 2, "production + unset and production + mock each warn once");
-  assert.match(mock[0]!, /unset, which means mock/);
-  assert.match(mock[1]!, /HARNESS is "mock"/);
+test("production refuses a mock harness outright (fail-closed)", () => {
+  assert.throws(() => loadConfig(productionEnv), /unset, which means mock/);
+  assert.throws(() => loadConfig({ ...productionEnv, HARNESS: "mock" }), /HARNESS is "mock"/);
+  loadConfig({ ...productionEnv, HARNESS: "pi" });
+  loadConfig({});
 });
 
 test("a leftover *=sqlite env throws (no silent downgrade to ephemeral memory)", () => {
@@ -408,4 +397,29 @@ test("baseModelProviders constrains the base model only when a provider is decla
     undefined,
     "with no declaration the shipped default stands, so upgrading never moves a deployment's model or its billing",
   );
+});
+
+test("RUN_PARTIAL_* policy parses with defaults, bounds, and fail-fast", () => {
+  const def = loadConfig({});
+  assert.equal(def.runPartialPolicy.flushIntervalMs, 750);
+  assert.equal(def.runPartialPolicy.minGrowthBytes, 512);
+  assert.equal(def.runPartialPolicy.maxBytes, 65_536);
+  const custom = loadConfig({
+    RUN_PARTIAL_FLUSH_INTERVAL_MS: "1500",
+    RUN_PARTIAL_MIN_GROWTH_BYTES: "256",
+    RUN_PARTIAL_MAX_BYTES: "8192",
+  });
+  assert.deepEqual(custom.runPartialPolicy, { flushIntervalMs: 1500, minGrowthBytes: 256, maxBytes: 8192 });
+  assert.throws(() => loadConfig({ RUN_PARTIAL_FLUSH_INTERVAL_MS: "10" }), /out of range/);
+  assert.throws(() => loadConfig({ RUN_PARTIAL_MAX_BYTES: "99999999" }), /out of range/);
+  assert.throws(() => loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "abc" }), /is not a number/);
+});
+
+test("RUN_PARTIAL_MIN_GROWTH_BYTES must not exceed RUN_PARTIAL_MAX_BYTES", () => {
+  assert.throws(
+    () => loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "65536", RUN_PARTIAL_MAX_BYTES: "4096" }),
+    /must not exceed/,
+  );
+  const ok = loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "4096", RUN_PARTIAL_MAX_BYTES: "4096" });
+  assert.equal(ok.runPartialPolicy.minGrowthBytes, 4096);
 });

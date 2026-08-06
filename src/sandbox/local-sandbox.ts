@@ -28,7 +28,7 @@ import type {
 } from "./sandbox.ts";
 
 const DEFAULT_LOCAL_SANDBOX_IMAGE = "qm-sandbox-local:latest";
-const HOME_DIR = "/root";
+const HOME_DIR = "/home/agent";
 const WORKSPACE_BASENAME = "workspace";
 const AGENT_PORT = 8080;
 const RO_LAYERS_TAR = ".ro-layers.tar";
@@ -40,6 +40,7 @@ export type { DockerExec };
 
 export interface LocalSandboxOptions {
   image?: string;
+  daemonHost?: string;
   dockerBin?: string;
   cpus?: number;
   memoryMb?: number;
@@ -74,11 +75,13 @@ export async function computeSandboxImageFingerprint(repoRoot: string): Promise<
   }
 }
 
-export const localContainerName = (scopeId: string): string => `qm-sbx-${localSlug(scopeId)}`;
-export const localVolumeName = (scopeId: string): string => `qm-home-${localSlug(scopeId)}`;
+const orgSlug = (): string => localSlug(`org:${configOrgId()}`).slice(0, 20);
+
+export const localContainerName = (scopeId: string): string => `qm-sbx-${orgSlug()}-${localSlug(scopeId)}`;
+export const localVolumeName = (scopeId: string): string => `qm-home-${orgSlug()}-${localSlug(scopeId)}`;
 export const localNetworkName = (containerName: string): string =>
   `qm-net-${containerName.replace(/^qm-(sbx|scratch)-/, "")}`;
-const localScratchName = (key: string): string => `qm-scratch-${localSlug(key)}`;
+const localScratchName = (key: string): string => `qm-scratch-${orgSlug()}-${localSlug(key)}`;
 
 function localSlug(id: string): string {
   const cleaned = id
@@ -90,6 +93,7 @@ function localSlug(id: string): string {
 
 export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandboxOptions = {}): Sandbox {
   const image = opts.image ?? DEFAULT_LOCAL_SANDBOX_IMAGE;
+  const daemonHost = opts.daemonHost ?? "127.0.0.1";
   const dexec = opts.dockerExec ?? spawnDockerExec(opts.dockerBin ?? "docker");
   const fetchImpl = opts.fetchImpl ?? fetch;
   const defaultTimeoutSec = opts.defaultTimeoutSec ?? 600;
@@ -112,18 +116,19 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         preflightDone = undefined;
         throw new Error("SANDBOX_BACKEND=local requires a running Docker daemon (is Docker Desktop running?)");
       }
-      const img = await dexec([
-        "image",
-        "inspect",
-        "-f",
-        `{{.Id}} {{if .Config.Labels}}{{index .Config.Labels "${FINGERPRINT_LABEL}"}}{{end}}`,
-        image,
-      ]);
+      const img = await dexec(["image", "inspect", "-f", "{{.Id}}", image]);
       if (img.code !== 0) {
         preflightDone = undefined;
         throw new Error(`local sandbox image ${image} not found — ${BUILD_HINT}`);
       }
-      const [imageId = "", labeled = ""] = img.stdout.trim().split(/\s+/);
+      const imageId = img.stdout.trim();
+      const labelsRaw = await dexec(["image", "inspect", "-f", "{{json .Config.Labels}}", image]);
+      let labeled = "";
+      try {
+        labeled = String((JSON.parse(labelsRaw.stdout.trim() || "null") ?? {})[FINGERPRINT_LABEL] ?? "");
+      } catch {
+        labeled = "";
+      }
       if (!staleWarned) {
         const want = await computeSandboxImageFingerprint(opts.repoRoot ?? process.cwd());
         if (want && labeled && labeled !== want) {
@@ -167,7 +172,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   ): Promise<{ status: number; text: string }> {
     const port = await resolvePort(name);
     const signals = [AbortSignal.timeout(timeoutMs ?? 30_000), ...(signal ? [signal] : [])];
-    const res = await fetchImpl(`http://127.0.0.1:${port}${path}`, {
+    const res = await fetchImpl(`http://${daemonHost}:${port}${path}`, {
       method: body === undefined ? "GET" : "POST",
       ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
       signal: AbortSignal.any(signals),
@@ -256,6 +261,13 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       "-p",
       `127.0.0.1:0:${AGENT_PORT}`,
       "--add-host=host.docker.internal:host-gateway",
+      "--security-opt",
+      "no-new-privileges",
+      "--cap-drop",
+      "ALL",
+      "--read-only",
+      "--tmpfs",
+      "/tmp:rw,noexec,nosuid,size=256m",
       ...(opts.cpus ? ["--cpus", String(opts.cpus)] : []),
       ...(opts.memoryMb ? ["--memory", `${opts.memoryMb}m`] : []),
       image,

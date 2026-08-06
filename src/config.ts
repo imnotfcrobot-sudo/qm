@@ -116,6 +116,7 @@ export interface Config {
   memoryCaptureQuietMs: number;
   memoryCaptureMaxTurns?: number;
   workers: number;
+  runPartialPolicy: { flushIntervalMs: number; minGrowthBytes: number; maxBytes: number };
   leaseTtlMs: number;
   heartbeatIntervalMs: number;
   reaperIntervalMs: number;
@@ -245,11 +246,13 @@ interface LocalSandboxEnv {
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
+  daemonHost?: string;
 }
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
   return {
     ...(env.LOCAL_SANDBOX_IMAGE ? { image: env.LOCAL_SANDBOX_IMAGE } : {}),
+    ...(env.LOCAL_SANDBOX_DAEMON_HOST ? { daemonHost: env.LOCAL_SANDBOX_DAEMON_HOST } : {}),
     ...(env.LOCAL_SANDBOX_DOCKER_BIN ? { dockerBin: env.LOCAL_SANDBOX_DOCKER_BIN } : {}),
     ...(numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) !== undefined
       ? { cpus: numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) }
@@ -449,6 +452,33 @@ function numEnvStrict(name: string, value: string | undefined): number | undefin
   return parsed;
 }
 
+function boundedIntEnv(name: string, value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = numEnvStrict(name, value);
+  if (parsed === undefined) return fallback;
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name}=${JSON.stringify(value)} is out of range — expected an integer between ${min} and ${max}.`);
+  }
+  return parsed;
+}
+
+function runPartialPolicyFromEnv(env: NodeJS.ProcessEnv): {
+  flushIntervalMs: number;
+  minGrowthBytes: number;
+  maxBytes: number;
+} {
+  const policy = {
+    flushIntervalMs: boundedIntEnv("RUN_PARTIAL_FLUSH_INTERVAL_MS", env.RUN_PARTIAL_FLUSH_INTERVAL_MS, 750, 100, 30_000),
+    minGrowthBytes: boundedIntEnv("RUN_PARTIAL_MIN_GROWTH_BYTES", env.RUN_PARTIAL_MIN_GROWTH_BYTES, 512, 64, 65_536),
+    maxBytes: boundedIntEnv("RUN_PARTIAL_MAX_BYTES", env.RUN_PARTIAL_MAX_BYTES, 65_536, 4_096, 262_144),
+  };
+  if (policy.minGrowthBytes > policy.maxBytes) {
+    throw new Error(
+      `RUN_PARTIAL_MIN_GROWTH_BYTES (${policy.minGrowthBytes}) must not exceed RUN_PARTIAL_MAX_BYTES (${policy.maxBytes}).`,
+    );
+  }
+  return policy;
+}
+
 function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
   const clean = (v: string | undefined): string =>
     (v ?? "").replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029<>]/g, "").trim();
@@ -567,11 +597,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
     }
   }
-  if (env.NODE_ENV === "production" && harnessEnvStrict(env.HARNESS) === "mock") {
-    console.warn(
-      `[config] HARNESS is ${env.HARNESS?.trim() ? '"mock"' : "unset, which means mock"} in production — this deployment answers every message with canned text and calls no model provider. Set HARNESS=pi to run real agent turns.`,
-    );
-  }
   if (env.SANDBOX_BACKEND === "sprites" && !env.SPRITES_EGRESS_PROXY_URL) {
     console.warn(
       "[config] SANDBOX_BACKEND=sprites without SPRITES_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set SPRITES_EGRESS_PROXY_URL to the public egress proxy to force sandbox traffic through it.",
@@ -588,6 +613,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const secondary = sandboxBackendEnvStrict(secondaryRaw, "SANDBOX_SECONDARY_BACKEND");
     if (secondary === sandboxBackend) throw new Error("SANDBOX_SECONDARY_BACKEND must differ from SANDBOX_BACKEND.");
     sandboxSecondaryBackend = secondary;
+  }
+  if (env.NODE_ENV === "production" && harnessEnvStrict(env.HARNESS) === "mock") {
+    throw new Error(
+      `[config] HARNESS is ${env.HARNESS?.trim() ? '"mock"' : "unset, which means mock"} in production — refusing to boot: a mock harness answers every message with canned text and calls no model provider. Set HARNESS=pi to run real agent turns.`,
+    );
   }
   const securityScreenBackend = securityScreenBackendEnvStrict(env.SECURITY_SCREEN_BACKEND);
   const proxyProvider = env.SECURITY_SCREEN_PROXY_PROVIDER?.trim();
@@ -828,6 +858,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cronFireConcurrency:
       numEnvStrict("CRON_FIRE_CONCURRENCY", env.CRON_FIRE_CONCURRENCY) ?? CONFIG_DEFAULTS.cronFireConcurrency,
     workers: numEnvStrict("WORKERS", env.WORKERS) ?? CONFIG_DEFAULTS.workers,
+    runPartialPolicy: runPartialPolicyFromEnv(env),
     leaseTtlMs: numEnvStrict("LEASE_TTL_MS", env.LEASE_TTL_MS) ?? CONFIG_DEFAULTS.leaseTtlMs,
     heartbeatIntervalMs:
       numEnvStrict("HEARTBEAT_INTERVAL_MS", env.HEARTBEAT_INTERVAL_MS) ??

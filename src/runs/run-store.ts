@@ -33,6 +33,9 @@ export interface Run {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  partialText?: string | null;
+  partialSeq?: number | null;
+  partialUpdatedAt?: number | null;
 }
 
 export interface EnqueueInput {
@@ -61,6 +64,8 @@ export interface RunStore {
   releaseLease(runId: string, leaseToken: string): Promise<boolean>;
 
   complete(runId: string, leaseToken: string, result: TurnResult): Promise<boolean>;
+
+  publishPartial(runId: string, leaseToken: string, seq: number, text: string, updatedAt: number): Promise<boolean>;
 
   fail(runId: string, leaseToken: string, error: string, opts?: { retry?: boolean }): Promise<{ requeued: boolean }>;
 

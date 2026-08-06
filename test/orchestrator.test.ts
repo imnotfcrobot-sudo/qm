@@ -2762,7 +2762,7 @@ test("a conversational turn never provisions a sandbox (lazy); execute/write/rea
   assert.equal(boxes.provisioned, 2, "second chat turn must not provision");
 });
 
-test("thinking always reaches the run activity feed, with the model-bound signature stripped", async () => {
+test("thinking is redacted before persistence and never reaches the run activity feed", async () => {
   const built = freshApp();
   const { app, runs } = built;
   const runViewFor = async (text: string) => {
@@ -2774,11 +2774,12 @@ test("thinking always reaches the run activity feed, with the model-bound signat
   const on = await app.turn(dm("!think open plan"));
   assert.equal(on.status, "ok");
   const entries = (await app.getSession(on.sessionId!))!.entries.filter((e) => e.type === "thinking");
-  assert.equal(entries.length, 1, "thinking is recorded durably");
+  assert.equal(entries.length, 1, "the thinking entry is recorded durably as a redacted marker");
+  assert.deepEqual(entries[0]!.payload, { thinking: "", redacted: true, chars: 9 });
   const onView = await runViewFor("!think open plan");
   const published = (onView?.activity ?? []).filter((a) => a.type === "thinking");
-  assert.equal(published.length, 1, "thinking is in the live feed");
-  assert.deepEqual(published[0]!.payload, { thinking: "open plan" }, "signature stripped from the published payload");
+  assert.equal(published.length, 0, "raw reasoning never reaches the live feed");
+  assert.equal(JSON.stringify(onView).includes("open plan"), false, "no reasoning text anywhere in the run view");
 });
 
 test("channel session for an all-internal audience runs and is channel-scoped", async () => {
