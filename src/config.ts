@@ -466,11 +466,17 @@ function runPartialPolicyFromEnv(env: NodeJS.ProcessEnv): {
   minGrowthBytes: number;
   maxBytes: number;
 } {
-  return {
+  const policy = {
     flushIntervalMs: boundedIntEnv("RUN_PARTIAL_FLUSH_INTERVAL_MS", env.RUN_PARTIAL_FLUSH_INTERVAL_MS, 750, 100, 30_000),
     minGrowthBytes: boundedIntEnv("RUN_PARTIAL_MIN_GROWTH_BYTES", env.RUN_PARTIAL_MIN_GROWTH_BYTES, 512, 64, 65_536),
     maxBytes: boundedIntEnv("RUN_PARTIAL_MAX_BYTES", env.RUN_PARTIAL_MAX_BYTES, 65_536, 4_096, 262_144),
   };
+  if (policy.minGrowthBytes > policy.maxBytes) {
+    throw new Error(
+      `RUN_PARTIAL_MIN_GROWTH_BYTES (${policy.minGrowthBytes}) must not exceed RUN_PARTIAL_MAX_BYTES (${policy.maxBytes}).`,
+    );
+  }
+  return policy;
 }
 
 function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {

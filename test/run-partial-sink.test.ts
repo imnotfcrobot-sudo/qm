@@ -97,3 +97,47 @@ test("capped partial still leaves lease liveness intact (no false client timeout
   assert.equal(leaseLapsed(after!, Date.now()), false, "lease kept fresh — clients must not time out");
   assert.ok((after!.partialText?.length ?? 0) <= 16, "partial stays capped");
 });
+
+test("delayed publish race: chunk arriving during an in-flight write is published by close", async () => {
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((r) => { release = r; });
+  const calls: string[] = [];
+  const store = {
+    async publishPartial(_runId: string, _lease: string, _seq: number, text: string) {
+      await gate;
+      calls.push(text);
+      return true;
+    },
+  } as unknown as RunStore;
+  const sink = createRunPartialSink(store, "run-1", "lease", { flushIntervalMs: 0, minGrowthBytes: 1, maxBytes: 1024 });
+  sink.append("first");
+  await new Promise((r) => setTimeout(r, 10));
+  sink.append("-second");
+  release!();
+  await sink.close();
+  assert.equal(calls.at(-1), "first-second", `final persisted snapshot must include both chunks, got ${JSON.stringify(calls)}`);
+});
+
+test("utf-8 truncation keeps the longest valid prefix without splitting code points", async () => {
+  const cases: Array<[string, number, string]> = [
+    ["你好世", 6, "你好"],
+    ["🙂🙂x", 8, "🙂🙂"],
+    ["你好世", 5, "你"],
+    ["🙂🙂x", 9, "🙂🙂x"],
+    ["ab中", 3, "ab"],
+    ["", 0, ""],
+  ];
+  for (const [input, maxBytes, want] of cases) {
+    let persisted = "";
+    const store = {
+      async publishPartial(_r: string, _l: string, _s: number, text: string) {
+        persisted = text;
+        return true;
+      },
+    } as unknown as RunStore;
+    const sink = createRunPartialSink(store, "run-1", "lease", { flushIntervalMs: 0, minGrowthBytes: 1, maxBytes });
+    sink.append(input);
+    await sink.close();
+    assert.equal(persisted, want, `${JSON.stringify(input)} at ${maxBytes}`);
+  }
+});

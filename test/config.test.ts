@@ -414,3 +414,12 @@ test("RUN_PARTIAL_* policy parses with defaults, bounds, and fail-fast", () => {
   assert.throws(() => loadConfig({ RUN_PARTIAL_MAX_BYTES: "99999999" }), /out of range/);
   assert.throws(() => loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "abc" }), /is not a number/);
 });
+
+test("RUN_PARTIAL_MIN_GROWTH_BYTES must not exceed RUN_PARTIAL_MAX_BYTES", () => {
+  assert.throws(
+    () => loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "65536", RUN_PARTIAL_MAX_BYTES: "4096" }),
+    /must not exceed/,
+  );
+  const ok = loadConfig({ RUN_PARTIAL_MIN_GROWTH_BYTES: "4096", RUN_PARTIAL_MAX_BYTES: "4096" });
+  assert.equal(ok.runPartialPolicy.minGrowthBytes, 4096);
+});

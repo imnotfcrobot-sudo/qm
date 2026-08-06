@@ -27,13 +27,15 @@ function utf8Bytes(text: string): number {
 }
 
 function truncateUtf8(text: string, maxBytes: number): string {
-  if (utf8Bytes(text) <= maxBytes) return text;
-  let buf = Buffer.from(text, "utf8").subarray(0, maxBytes);
-  while (buf.length > 0 && (buf[buf.length - 1]! & 0b1100_0000) === 0b1000_0000) {
-    buf = buf.subarray(0, buf.length - 1);
+  let bytes = 0;
+  let end = 0;
+  for (const ch of text) {
+    const next = bytes + Buffer.byteLength(ch, "utf8");
+    if (next > maxBytes) break;
+    bytes = next;
+    end += ch.length;
   }
-  const out = buf.toString("utf8");
-  return out.endsWith("�") && !text.startsWith(out) ? out.slice(0, -1) : out;
+  return text.slice(0, end);
 }
 
 export function createRunPartialSink(
@@ -52,10 +54,13 @@ export function createRunPartialSink(
   let inFlight: Promise<void> | null = null;
   let closed = false;
   let fenced = false;
+  let publishFailed = false;
   let dirty = false;
+  let generation = 0;
 
   async function publish(): Promise<void> {
     if (fenced || !text || !dirty) return;
+    const publishedGeneration = generation;
     const snapshot = truncateUtf8(text, policy.maxBytes);
     const at = Date.now();
     const n = ++seq;
@@ -63,7 +68,7 @@ export function createRunPartialSink(
     try {
       accepted = await runs.publishPartial(runId, leaseToken, n, snapshot, at);
     } catch {
-      dirty = false;
+      publishFailed = true;
       hooks.onError?.({ runId, kind: "publish_failed" });
       return;
     }
@@ -74,7 +79,7 @@ export function createRunPartialSink(
     }
     lastFlushAt = at;
     lastFlushedBytes = utf8Bytes(snapshot);
-    dirty = false;
+    if (generation === publishedGeneration) dirty = false;
   }
 
   function maybeKick(): void {
@@ -95,7 +100,11 @@ export function createRunPartialSink(
         textBytes = policy.maxBytes;
         capped = true;
       }
-      if (textBytes !== lastFlushedBytes) dirty = true;
+      if (textBytes !== lastFlushedBytes) {
+        dirty = true;
+        publishFailed = false;
+        generation += 1;
+      }
       if (textBytes - lastFlushedBytes < policy.minGrowthBytes) return;
       if (Date.now() - lastFlushAt < policy.flushIntervalMs) return;
       maybeKick();
@@ -103,12 +112,18 @@ export function createRunPartialSink(
     async flush(): Promise<void> {
       if (closed || fenced) return;
       await inFlight;
-      if (!fenced) await publish();
+      while (!fenced && !publishFailed && dirty) {
+        await publish();
+        await inFlight;
+      }
     },
     async close(): Promise<void> {
       if (closed) return;
       await inFlight;
-      if (!fenced) await publish();
+      while (!fenced && !publishFailed && dirty) {
+        await publish();
+        await inFlight;
+      }
       closed = true;
     },
   };
