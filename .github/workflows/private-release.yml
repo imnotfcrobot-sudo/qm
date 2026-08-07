@@ -1,0 +1,479 @@
+name: private-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact QM source commit to build (immutable input; labels and qualification pin to it)"
+        required: true
+        default: "d35c5cf740004dfc9b4a640f1122f9988da630bc"
+
+permissions:
+  contents: read
+
+env:
+  CORE_IMAGE: ghcr.io/imnotfcrobot-sudo/qm/core
+  SANDBOX_BASE_IMAGE: ghcr.io/imnotfcrobot-sudo/qm/sandbox-base
+  SANDBOX_LOCAL_IMAGE: ghcr.io/imnotfcrobot-sudo/qm/sandbox-local
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      core_digest: ${{ steps.core.outputs.digest }}
+      base_digest: ${{ steps.base.outputs.digest }}
+      local_digest: ${{ steps.local.outputs.digest }}
+      tree_sha: ${{ steps.meta.outputs.tree_sha }}
+      short: ${{ steps.meta.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - id: meta
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          case "$SOURCE_SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "source_sha must be lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then echo "source_sha must be a full 40-char commit SHA" >&2; exit 1; fi
+          if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]; then echo "checkout HEAD drifted from source_sha" >&2; exit 1; fi
+          echo "tree_sha=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: core
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/core/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.CORE_IMAGE }}:sha-${{ steps.meta.outputs.short }}
+          build-args: |
+            GIT_SHA=${{ inputs.source_sha }}
+          sbom: true
+          provenance: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/imnotfcrobot-sudo/qm
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.title=qm-core
+            org.opencontainers.image.description=Private exact-source build of QM core (MHB cell release candidate)
+
+      - id: base
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: fly/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.SANDBOX_BASE_IMAGE }}:sha-${{ steps.meta.outputs.short }}
+          sbom: true
+          provenance: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/imnotfcrobot-sudo/qm
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.title=qm-sandbox-base
+            org.opencontainers.image.description=Private exact-source build of QM sandbox base (MHB cell release candidate)
+
+      - id: local
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: local/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.SANDBOX_LOCAL_IMAGE }}:sha-${{ steps.meta.outputs.short }}
+          build-args: |
+            BASE=${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
+          sbom: true
+          provenance: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/imnotfcrobot-sudo/qm
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.title=qm-sandbox-local
+            org.opencontainers.image.description=Private exact-source build of QM local sandbox agent (MHB cell release candidate)
+
+      - name: Record digests
+        run: |
+          mkdir -p release-artifacts
+          cat > release-artifacts/digests.json <<'EOF'
+          {
+            "source": {
+              "repo": "imnotfcrobot-sudo/qm",
+              "commit": "${{ inputs.source_sha }}",
+              "tree": "${{ steps.meta.outputs.tree_sha }}"
+            },
+            "images": {
+              "core": "${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}",
+              "sandbox-base": "${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}",
+              "sandbox-local": "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}"
+            },
+            "referenceTags": {
+              "core": "sha-${{ steps.meta.outputs.short }}",
+              "sandbox-base": "sha-${{ steps.meta.outputs.short }}",
+              "sandbox-local": "sha-${{ steps.meta.outputs.short }}"
+            },
+            "platforms": ["linux/amd64"],
+            "workerSharesCoreDigest": true,
+            "workerCommand": "node src/runs/worker-main.ts",
+            "coreCommand": "node src/index.ts"
+          }
+          EOF
+          cat release-artifacts/digests.json
+
+      - name: Pull images by digest (for local SBOM/scan)
+        run: |
+          docker pull "${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}"
+          docker pull "${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}"
+          docker pull "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}"
+
+      - name: SBOM (SPDX) core
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
+          output-file: release-artifacts/sbom-core.spdx.json
+
+      - name: SBOM sandbox-base
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
+          output-file: release-artifacts/sbom-sandbox-base.spdx.json
+
+      - name: SBOM sandbox-local
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}
+          output-file: release-artifacts/sbom-sandbox-local.spdx.json
+
+      - name: Trivy scan core
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
+          format: json
+          output: release-artifacts/trivy-core.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+
+      - name: Trivy scan sandbox-base
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
+          format: json
+          output: release-artifacts/trivy-sandbox-base.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+
+      - name: Trivy scan sandbox-local
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}
+          format: json
+          output: release-artifacts/trivy-sandbox-local.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+
+      - name: Provenance/SBOM attestation evidence (imagetools)
+        run: |
+          docker buildx imagetools inspect "${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}" --raw > release-artifacts/imagetools-core.json
+          docker buildx imagetools inspect "${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}" --raw > release-artifacts/imagetools-sandbox-base.json
+          docker buildx imagetools inspect "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}" --raw > release-artifacts/imagetools-sandbox-local.json
+          python3 - <<'PY'
+          import json, glob, sys
+          ok = True
+          for f in sorted(glob.glob("release-artifacts/imagetools-*.json")):
+              d = json.load(open(f))
+              manifests = d.get("manifests", [])
+              attest = [m for m in manifests if m.get("annotations", {}).get("vnd.docker.reference.type") == "attestation-manifest"]
+              print(f, "attestation-manifests:", len(attest))
+              if len(attest) == 0:
+                  ok = False
+          if not ok:
+              print("expected SBOM+provenance attestations on every image", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Vulnerability summary
+        run: |
+          python3 - <<'PY'
+          import json, glob
+          summary = {}
+          for f in sorted(glob.glob("release-artifacts/trivy-*.json")):
+              d = json.load(open(f))
+              counts = {}
+              for r in d.get("Results", []):
+                  for v in r.get("Vulnerabilities") or []:
+                      counts[v["Severity"]] = counts.get(v["Severity"], 0) + 1
+              summary[f] = counts
+              print(f, counts)
+          with open("release-artifacts/trivy-summary.json", "w") as fh:
+              json.dump(summary, fh, indent=2)
+          PY
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: release-artifacts/
+          if-no-files-found: error
+
+  qualify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Pin verification
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then echo "source_sha must be a full 40-char commit SHA" >&2; exit 1; fi
+          if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]; then echo "checkout HEAD drifted from source_sha" >&2; exit 1; fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull final images by digest
+        run: |
+          mkdir -p qualification
+          docker pull "${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}"
+          docker pull "${{ env.SANDBOX_BASE_IMAGE }}@${{ needs.build.outputs.base_digest }}"
+          docker pull "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}"
+
+      - name: Inspect labels, user, env hygiene
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CORE_REF: ${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}
+          BASE_REF: ${{ env.SANDBOX_BASE_IMAGE }}@${{ needs.build.outputs.base_digest }}
+          LOCAL_REF: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          sha = os.environ["SOURCE_SHA"]
+          checks = {}
+          def inspect(ref):
+              return json.loads(subprocess.run(["docker", "inspect", ref], capture_output=True, text=True, check=True).stdout)[0]
+          images = {
+              "core": os.environ["CORE_REF"],
+              "sandbox-base": os.environ["BASE_REF"],
+              "sandbox-local": os.environ["LOCAL_REF"],
+          }
+          report = {}
+          for name, ref in images.items():
+              cfg = inspect(ref)["Config"]
+              labels = cfg.get("Labels") or {}
+              env = cfg.get("Env") or []
+              leaked = [e for e in env if any(k in e.upper() for k in ("TOKEN=", "SECRET=", "PASSWORD=", "PRIVATE_KEY", "_KEY="))]
+              report[name] = {
+                  "revision_label": labels.get("org.opencontainers.image.revision"),
+                  "revision_matches_source": labels.get("org.opencontainers.image.revision") == sha,
+                  "license_label": labels.get("org.opencontainers.image.licenses"),
+                  "user": cfg.get("User") or "(root-default)",
+                  "env_secret_leak": leaked,
+              }
+          checks["core_nonroot"] = report["core"]["user"] == "node"
+          checks["sandbox_local_nonroot"] = report["sandbox-local"]["user"] == "agent"
+          checks["revision_labels_match"] = all(r["revision_matches_source"] for r in report.values())
+          checks["no_env_secret_leak"] = all(not r["env_secret_leak"] for r in report.values())
+          report["checks"] = checks
+          json.dump(report, open("qualification/inspect.json", "w"), indent=2)
+          print(json.dumps(report, indent=2))
+          if not all(checks.values()):
+              sys.exit(1)
+          PY
+
+      - name: No build credentials in layers/history
+        env:
+          CORE_REF: ${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}
+          BASE_REF: ${{ env.SANDBOX_BASE_IMAGE }}@${{ needs.build.outputs.base_digest }}
+          LOCAL_REF: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}
+        run: |
+          for pair in "core:$CORE_REF" "sandbox-base:$BASE_REF" "sandbox-local:$LOCAL_REF"; do
+            name="${pair%%:*}"; ref="${pair#*:}"
+            docker history --no-trunc "$ref" > "qualification/history-${name}.txt"
+            if grep -iE "GITHUB_TOKEN|ghp_[A-Za-z0-9]|ghs_[A-Za-z0-9]|gho_[A-Za-z0-9]|ghu_[A-Za-z0-9]|ghr_[A-Za-z0-9]|github_pat_|npm_[A-Za-z0-9]{30,}" "qualification/history-${name}.txt"; then
+              echo "credential pattern found in ${name} history" >&2; exit 1
+            fi
+          done
+          docker run --rm --user root --entrypoint sh "$CORE_REF" -c 'test ! -d /root/.npm && echo npm-cache-absent && test ! -d /tmp/node-compile-cache && echo compile-cache-absent' | tee qualification/hygiene-core.txt
+
+      - name: Generate ephemeral qualification secrets (masked, CI-only)
+        run: |
+          for v in SMOKE_CORE_SECRET SMOKE_CAPABILITY_SECRET SMOKE_PORTAL_SECRET SMOKE_CONNECTOR_SECRET SMOKE_SKILL_SECRET; do
+            val="$(openssl rand -hex 32)"
+            echo "::add-mask::$val"
+            echo "${v}=${val}" >> "$GITHUB_ENV"
+          done
+
+      - name: Start core and check /healthz
+        run: |
+          CORE="${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}"
+          docker run -d --name qm-core-qual \
+            -e CORE_SIGNING_SECRET="$SMOKE_CORE_SECRET" \
+            -e CAPABILITY_SECRET="$SMOKE_CAPABILITY_SECRET" \
+            -e PORTAL_IDENTITY_SECRET="$SMOKE_PORTAL_SECRET" \
+            -e CONNECTOR_SECRET_KEY="$SMOKE_CONNECTOR_SECRET" \
+            -e SKILL_SIGNING_SECRET="$SMOKE_SKILL_SECRET" \
+            -e SANDBOX_BACKEND=local \
+            -e HARNESS=pi \
+            -p 127.0.0.1:8080:8080 "$CORE"
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/healthz > qualification/healthz.json 2>/dev/null; then break; fi
+            sleep 2
+          done
+          if [ ! -s qualification/healthz.json ]; then docker logs qm-core-qual >&2; exit 1; fi
+          cat qualification/healthz.json
+          python3 -c "import json; d=json.load(open('qualification/healthz.json')); assert d.get('ok') is True, d"
+
+      - name: Source Auth v0/v1 smoke
+        run: |
+          cat > qualification/smoke-source-auth.ts <<'EOF'
+          import { signedRequestHeaders, signedRequestHeadersV1 } from "../src/auth/source-auth-sign.ts";
+          import { writeFileSync } from "node:fs";
+
+          const base = "http://127.0.0.1:8080";
+          const secret = process.env.SMOKE_CORE_SECRET as string;
+          const path = "/v1/turns?async=1";
+          const body = JSON.stringify({ surface: "smoke", text: "auth probe" });
+
+          type Result = { status: number; message: string };
+          async function send(headers: Record<string, string>): Promise<Result> {
+            const res = await fetch(`${base}${path}`, {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body,
+            });
+            const json = (await res.json().catch(() => ({}))) as { message?: unknown };
+            return { status: res.status, message: String(json.message ?? "") };
+          }
+          const authLayerRejected = (r: Result) =>
+            r.status === 401 && /signature|timestamp|nonce|duplicate|source-auth/i.test(r.message);
+
+          const results: Record<string, unknown> = { probe: path };
+          const unsigned = await send({});
+          results.unsigned_rejected = unsigned.status === 401 && /missing, invalid, or stale source-auth headers/i.test(unsigned.message);
+          results.unsigned_response = unsigned;
+
+          const v0 = await send(signedRequestHeaders(secret, "POST", path, body));
+          results.v0_accepted = !authLayerRejected(v0);
+          results.v0_response = v0;
+
+          const fixedNonce = "AAAAAAAAAAAAAAAAAAAAAA";
+          const v1Headers = signedRequestHeadersV1(secret, "POST", path, body, {}, Math.floor(Date.now() / 1000), () => fixedNonce);
+          const v1 = await send(v1Headers);
+          results.v1_accepted = !authLayerRejected(v1);
+          results.v1_response = v1;
+
+          const replay = await send(v1Headers);
+          results.exact_replay_rejected = replay.status === 401 && /duplicate/i.test(replay.message);
+          results.replay_response = replay;
+
+          const v1bHeaders = signedRequestHeadersV1(secret, "POST", path, body, {}, Math.floor(Date.now() / 1000), () => "BBBBBBBBBBBBBBBBBBBBBB");
+          const v1b = await send(v1bHeaders);
+          results.new_nonce_accepted = !authLayerRejected(v1b);
+          results.new_nonce_response = v1b;
+
+          const tamperedHeaders = { ...v1bHeaders, "x-request-nonce": "CCCCCCCCCCCCCCCCCCCCCC" };
+          const tampered = await send(tamperedHeaders);
+          results.tampered_nonce_rejected = tampered.status === 401 && /signature mismatch/i.test(tampered.message);
+          results.tampered_response = tampered;
+
+          const missingNonceHeaders = { ...v1bHeaders };
+          delete missingNonceHeaders["x-request-nonce"];
+          const missingNonce = await send(missingNonceHeaders);
+          results.v1_missing_nonce_rejected = missingNonce.status === 401 && /nonce/i.test(missingNonce.message);
+          results.missing_nonce_response = missingNonce;
+
+          const checks = [
+            "unsigned_rejected",
+            "v0_accepted",
+            "v1_accepted",
+            "exact_replay_rejected",
+            "new_nonce_accepted",
+            "tampered_nonce_rejected",
+            "v1_missing_nonce_rejected",
+          ];
+          results.all = checks.every((k) => results[k] === true);
+          writeFileSync("qualification/source-auth-smoke.json", JSON.stringify(results, null, 2));
+          console.log(JSON.stringify(results, null, 2));
+          if (!results.all) process.exit(1);
+          EOF
+          node qualification/smoke-source-auth.ts
+
+      - name: Worker starts from the same core digest with its own command
+        run: |
+          CORE="${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}"
+          docker run -d --name qm-worker-qual \
+            -e CORE_SIGNING_SECRET="$SMOKE_CORE_SECRET" \
+            -e CAPABILITY_SECRET="$SMOKE_CAPABILITY_SECRET" \
+            -e PORTAL_IDENTITY_SECRET="$SMOKE_PORTAL_SECRET" \
+            -e CONNECTOR_SECRET_KEY="$SMOKE_CONNECTOR_SECRET" \
+            -e SKILL_SIGNING_SECRET="$SMOKE_SKILL_SECRET" \
+            -e SANDBOX_BACKEND=local \
+            -e HARNESS=pi \
+            "$CORE" node src/runs/worker-main.ts
+          ok=""
+          for i in $(seq 1 30); do
+            if docker logs qm-worker-qual 2>&1 | grep -q "draining runs"; then ok=1; break; fi
+            sleep 2
+          done
+          if [ -z "$ok" ]; then echo "worker did not reach 'draining runs'" >&2; docker logs qm-worker-qual >&2; exit 1; fi
+          docker stop qm-worker-qual > /dev/null
+          docker logs qm-worker-qual > qualification/worker.log 2>&1
+          grep -q "SIGTERM received, stopping" qualification/worker.log && echo "worker start/stop clean"
+
+      - name: Container logs carry no secrets
+        run: |
+          docker logs qm-core-qual > qualification/core.log 2>&1
+          for f in qualification/core.log qualification/worker.log; do
+            for v in "$SMOKE_CORE_SECRET" "$SMOKE_CAPABILITY_SECRET" "$SMOKE_PORTAL_SECRET" "$SMOKE_CONNECTOR_SECRET" "$SMOKE_SKILL_SECRET"; do
+              if grep -qF "$v" "$f"; then echo "secret leaked into $f" >&2; exit 1; fi
+            done
+          done
+          echo "no secret material in container logs"
+          tail -3 qualification/core.log
+
+      - name: Upload qualification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification
+          path: qualification/
+          if-no-files-found: error
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker rm -f qm-core-qual qm-worker-qual 2>/dev/null || true
+          docker ps -a --filter "name=qm-" --format '{{.Names}}'
