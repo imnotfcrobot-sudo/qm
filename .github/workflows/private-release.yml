@@ -150,7 +150,7 @@ jobs:
               "npmAudit": "npm audit --omit=dev --audit-level=moderate against registry.npmjs.org; build fails on findings",
               "trivyCriticalGate": "trivy severity=CRITICAL exit-code=1 with exact exceptions from .trivyignore.yaml; unapproved CRITICAL fails the build",
               "exceptionFile": ".trivyignore.yaml",
-              "approvedExceptionCVEs": 7,
+              "approvedExceptionCVEs": 8,
               "coreNpmCliRemoved": true,
               "sandboxNpmPinned": "npm@11.18.0 (vendored tar 7.5.19, CVE-2026-59873 fixed)"
             }

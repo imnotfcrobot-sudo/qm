@@ -102,11 +102,13 @@ test("gate semantics: a non-excepted CRITICAL is not suppressed", () => {
 });
 
 test("workflow wires the gate: trivy exit-code 1 + trivyignores + npm audit, no escape hatches", () => {
+  const gateSteps = workflowRaw.match(/name: Security gate \S+ \(unapproved CRITICAL fails the build\)/g) ?? [];
+  assert.equal(gateSteps.length, 3, "one gate step per image (core, sandbox-base, sandbox-local)");
   assert.match(workflowRaw, /exit-code: "1"/, "trivy gate must fail the job on unapproved findings");
   assert.match(workflowRaw, /trivyignores: \.trivyignore\.yaml/, "gate must consume the exact exception file");
   assert.match(workflowRaw, /severity: CRITICAL\n/, "gate pass must target CRITICAL");
   assert.match(workflowRaw, /npm audit --omit=dev --audit-level=moderate/, "npm audit must run in the pipeline");
-  assert.doesNotMatch(workflowRaw, /\|\|\s*true/, "no || true anywhere in the release workflow");
+  assert.doesNotMatch(workflowRaw, /\|\|\s*(true|:)/, "no || true / ||: anywhere in the release workflow");
   assert.doesNotMatch(workflowRaw, /continue-on-error/i, "no continue-on-error anywhere in the release workflow");
   assert.doesNotMatch(workflowRaw, /ignore-unfixed: '?true/, "global ignore-unfixed is forbidden");
 });
