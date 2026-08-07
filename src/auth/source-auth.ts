@@ -1,4 +1,4 @@
-import { signRequest as signCanonical } from "./source-auth-sign.ts";
+import { isValidNonce, signRequest as signCanonical, signRequestV1 } from "./source-auth-sign.ts";
 import { createMemoryReplayDedupe, type ReplayDedupe } from "./replay-dedupe.ts";
 import { constantTimeEqual } from "../util/crypto.ts";
 
@@ -14,6 +14,7 @@ interface SourceAuthRequest {
   timestamp: number;
   body: string;
   eventId: string;
+  nonce?: string;
 }
 
 export type SourceAuthResult = { ok: true } | { ok: false; reason: string };
@@ -35,7 +36,7 @@ export function signRequest(secret: string, timestamp: number, body: string): st
 
 export function verifySignature(
   secret: string,
-  req: { signature: string; timestamp: number; body: string },
+  req: { signature: string; timestamp: number; body: string; nonce?: string },
   now: number,
   replayWindowMs: number,
 ): SourceAuthResult {
@@ -47,6 +48,15 @@ export function verifySignature(
   }
   if (Math.abs(now - req.timestamp * 1000) > replayWindowMs) {
     return { ok: false, reason: "stale timestamp (replay protection)" };
+  }
+  if (req.signature.startsWith("v1=")) {
+    if (!isValidNonce(req.nonce)) {
+      return { ok: false, reason: "missing or malformed request nonce" };
+    }
+    if (!constantTimeEqual(signRequestV1(secret, req.timestamp, req.nonce, req.body), req.signature)) {
+      return { ok: false, reason: "signature mismatch" };
+    }
+    return { ok: true };
   }
   if (!constantTimeEqual(signRequest(secret, req.timestamp, req.body), req.signature)) {
     return { ok: false, reason: "signature mismatch" };
