@@ -6,7 +6,11 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm audit --omit=dev --audit-level=moderate \
-  && rm -rf /root/.npm /tmp/node-compile-cache
+  && rm -rf /root/.npm /tmp/node-compile-cache \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+  && ! test -e /usr/local/bin/npm && ! test -L /usr/local/bin/npm \
+  && ! test -e /usr/local/bin/npx && ! test -L /usr/local/bin/npx \
+  && ! test -d /usr/local/lib/node_modules/npm
 
 COPY src ./src
 COPY cli/templates/slack-manifest.json ./cli/templates/slack-manifest.json
