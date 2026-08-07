@@ -102,12 +102,25 @@ test("gate semantics: a non-excepted CRITICAL is not suppressed", () => {
 });
 
 test("workflow wires the gate: trivy exit-code 1 + trivyignores + npm audit, no escape hatches", () => {
-  const gateSteps = workflowRaw.match(/name: Security gate \S+ \(unapproved CRITICAL fails the build\)/g) ?? [];
+  const gateSteps = workflowRaw.match(/name: Security gate \S+ \(unapproved (HIGH or CRITICAL|CRITICAL) fails the build\)/g) ?? [];
   assert.equal(gateSteps.length, 3, "one gate step per image (core, sandbox-base, sandbox-local)");
+  const coreGate = workflowRaw.match(/name: Security gate core \(unapproved HIGH or CRITICAL fails the build\)[\s\S]*?severity: (CRITICAL,HIGH)\n/);
+  assert.ok(coreGate, "core gate must block HIGH and CRITICAL");
+  const sandboxGates = workflowRaw.match(/name: Security gate sandbox-\S+ \(unapproved CRITICAL fails the build\)[\s\S]*?severity: CRITICAL\n/g) ?? [];
+  assert.equal(sandboxGates.length, 2, "sandbox gates stay CRITICAL-only with exact exceptions");
   assert.match(workflowRaw, /exit-code: "1"/, "trivy gate must fail the job on unapproved findings");
   assert.match(workflowRaw, /trivyignores: \.trivyignore\.yaml/, "gate must consume the exact exception file");
-  assert.match(workflowRaw, /severity: CRITICAL\n/, "gate pass must target CRITICAL");
   assert.match(workflowRaw, /npm audit --omit=dev --audit-level=moderate/, "npm audit must run in the pipeline");
+  assert.match(
+    workflowRaw,
+    /name: Pi dependency security test \(embedded shrinkwrap pins — rollback fails here\)[\s\S]*?test\/pi-dependency-security\.test\.ts/,
+    "the Pi dependency security test must gate the build before images are built",
+  );
+  assert.match(
+    workflowRaw,
+    /name: SBOM proves vulnerable pi-shipped versions are gone from core[\s\S]*?sys\.exit\(1\)/,
+    "the SBOM gate must fail on vulnerable or missing fixed versions",
+  );
   assert.doesNotMatch(workflowRaw, /\|\|\s*(true|:)/, "no || true / ||: anywhere in the release workflow");
   assert.doesNotMatch(workflowRaw, /continue-on-error/i, "no continue-on-error anywhere in the release workflow");
   assert.doesNotMatch(workflowRaw, /ignore-unfixed: '?true/, "global ignore-unfixed is forbidden");

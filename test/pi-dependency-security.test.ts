@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const piCodingAgentTarball =
-  "https://github.com/yc-software/pi/releases/download/qm-pi-coding-agent-0.82.0-security.2/earendil-works-pi-coding-agent-0.82.0-qm-security.2.tgz";
+  "https://github.com/imnotfcrobot-sudo/pi/releases/download/qm-pi-coding-agent-0.82.0-security.3/earendil-works-pi-coding-agent-0.82.0-qm-security.3.tgz";
 
 function installedVersion(path: string): string {
   const manifestUrl = new URL(`../node_modules/${path}/package.json`, import.meta.url);
@@ -44,17 +46,48 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   const minimatchManifest = createRequire(piManifest).resolve("minimatch/package.json");
 
   assert.equal(pi?.resolved, piCodingAgentTarball);
-  assert.equal(pi?.hasShrinkwrap, true);
+
+  const embeddedShrinkwrap = JSON.parse(
+    readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/npm-shrinkwrap.json", import.meta.url), "utf8"),
+  ) as { packages?: Record<string, { version?: unknown }> };
+  const embedded = embeddedShrinkwrap.packages ?? {};
+  assert.equal(embedded["node_modules/brace-expansion"]?.version, "5.0.9");
+  assert.equal(embedded["node_modules/undici"]?.version, "8.9.0");
+
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
+  assert.deepEqual(lockedVersions(packages, "undici"), ["8.9.0"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
   assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.9");
+  assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
   assert.equal(installedVersion("@hono/node-server"), "2.0.10");
   assert.match(
     readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/LICENSE", import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,
   );
+});
+
+test("no install path still carries the vulnerable pi-shipped versions", () => {
+  const root = fileURLToPath(new URL("../node_modules", import.meta.url));
+  const offenders: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === ".bin" || entry.name === ".cache") continue;
+        stack.push(full);
+        continue;
+      }
+      if (entry.name !== "package.json") continue;
+      const manifest = JSON.parse(readFileSync(full, "utf8")) as { name?: unknown; version?: unknown };
+      if (manifest.name === "brace-expansion" && manifest.version === "5.0.8") offenders.push(full);
+      if (manifest.name === "undici" && manifest.version === "8.5.0") offenders.push(full);
+    }
+  }
+  assert.deepEqual(offenders, []);
 });
 
 test("MCP Streamable HTTP works through the patched Hono major", async (t) => {
