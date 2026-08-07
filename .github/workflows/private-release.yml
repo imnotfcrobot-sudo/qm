@@ -58,6 +58,9 @@ jobs:
           npm ci
           npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org
 
+      - name: Pi dependency security test (embedded shrinkwrap pins — rollback fails here)
+        run: node --experimental-test-module-mocks --test test/pi-dependency-security.test.ts
+
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -170,6 +173,28 @@ jobs:
           image: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
           output-file: release-artifacts/sbom-core.spdx.json
 
+      - name: SBOM proves vulnerable pi-shipped versions are gone from core
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("release-artifacts/sbom-core.spdx.json"))
+          counts = {"brace-expansion@5.0.8": 0, "undici@8.5.0": 0, "brace-expansion@5.0.9": 0, "undici@8.9.0": 0}
+          for pkg in d.get("packages", []):
+              key = f'{pkg.get("name")}@{pkg.get("versionInfo")}'
+              if key in counts:
+                  counts[key] += 1
+          print(json.dumps(counts, indent=2))
+          ok = (
+              counts["brace-expansion@5.0.8"] == 0
+              and counts["undici@8.5.0"] == 0
+              and counts["brace-expansion@5.0.9"] >= 1
+              and counts["undici@8.9.0"] >= 1
+          )
+          if not ok:
+              print("SBOM gate failed: vulnerable versions present or fixed versions missing", file=sys.stderr)
+              sys.exit(1)
+          PY
+
       - name: SBOM sandbox-base
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
@@ -209,11 +234,11 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: "0"
 
-      - name: Security gate core (unapproved CRITICAL fails the build)
+      - name: Security gate core (unapproved HIGH or CRITICAL fails the build)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
-          severity: CRITICAL
+          severity: CRITICAL,HIGH
           trivyignores: .trivyignore.yaml
           exit-code: "1"
           format: table
