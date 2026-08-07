@@ -29,7 +29,7 @@ jobs:
       tree_sha: ${{ steps.meta.outputs.tree_sha }}
       short: ${{ steps.meta.outputs.short }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_sha }}
 
@@ -47,16 +47,25 @@ jobs:
           echo "short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: npm audit (release dependency tree, official registry)
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: core
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: deploy/core/Dockerfile
@@ -76,7 +85,7 @@ jobs:
             org.opencontainers.image.description=Private exact-source build of QM core (MHB cell release candidate)
 
       - id: base
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: fly/Dockerfile
@@ -94,7 +103,7 @@ jobs:
             org.opencontainers.image.description=Private exact-source build of QM sandbox base (MHB cell release candidate)
 
       - id: local
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: local/Dockerfile
@@ -136,7 +145,15 @@ jobs:
             "platforms": ["linux/amd64"],
             "workerSharesCoreDigest": true,
             "workerCommand": "node src/runs/worker-main.ts",
-            "coreCommand": "node src/index.ts"
+            "coreCommand": "node src/index.ts",
+            "securityGate": {
+              "npmAudit": "npm audit --omit=dev --audit-level=moderate against registry.npmjs.org; build fails on findings",
+              "trivyCriticalGate": "trivy severity=CRITICAL exit-code=1 with exact exceptions from .trivyignore.yaml; unapproved CRITICAL fails the build",
+              "exceptionFile": ".trivyignore.yaml",
+              "approvedExceptionCVEs": 7,
+              "coreNpmCliRemoved": true,
+              "sandboxNpmPinned": "npm@11.18.0 (vendored tar 7.5.19, CVE-2026-59873 fixed)"
+            }
           }
           EOF
           cat release-artifacts/digests.json
@@ -148,25 +165,25 @@ jobs:
           docker pull "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}"
 
       - name: SBOM (SPDX) core
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
           output-file: release-artifacts/sbom-core.spdx.json
 
       - name: SBOM sandbox-base
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
           output-file: release-artifacts/sbom-sandbox-base.spdx.json
 
       - name: SBOM sandbox-local
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}
           output-file: release-artifacts/sbom-sandbox-local.spdx.json
 
       - name: Trivy scan core
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
           format: json
@@ -175,7 +192,7 @@ jobs:
           exit-code: "0"
 
       - name: Trivy scan sandbox-base
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
           format: json
@@ -184,13 +201,40 @@ jobs:
           exit-code: "0"
 
       - name: Trivy scan sandbox-local
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}
           format: json
           output: release-artifacts/trivy-sandbox-local.json
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: "0"
+
+      - name: Security gate core (unapproved CRITICAL fails the build)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
+          severity: CRITICAL
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+          format: table
+
+      - name: Security gate sandbox-base (unapproved CRITICAL fails the build)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
+          severity: CRITICAL
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+          format: table
+
+      - name: Security gate sandbox-local (unapproved CRITICAL fails the build)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}
+          severity: CRITICAL
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+          format: table
 
       - name: Provenance/SBOM attestation evidence (imagetools)
         run: |
@@ -217,20 +261,25 @@ jobs:
           python3 - <<'PY'
           import json, glob
           summary = {}
+          unique_criticals = {}
           for f in sorted(glob.glob("release-artifacts/trivy-*.json")):
               d = json.load(open(f))
               counts = {}
               for r in d.get("Results", []):
                   for v in r.get("Vulnerabilities") or []:
                       counts[v["Severity"]] = counts.get(v["Severity"], 0) + 1
+                      if v["Severity"] == "CRITICAL":
+                          unique_criticals[v["VulnerabilityID"]] = v.get("PkgName")
               summary[f] = counts
               print(f, counts)
+          summary["uniqueCriticalCVEsAcrossImages"] = dict(sorted(unique_criticals.items()))
+          print("unique CRITICAL CVEs across all images:", len(unique_criticals), sorted(unique_criticals))
           with open("release-artifacts/trivy-summary.json", "w") as fh:
               json.dump(summary, fh, indent=2)
           PY
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-artifacts
           path: release-artifacts/
@@ -243,7 +292,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_sha }}
 
@@ -254,11 +303,11 @@ jobs:
           if [ "${#SOURCE_SHA}" -ne 40 ]; then echo "source_sha must be a full 40-char commit SHA" >&2; exit 1; fi
           if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]; then echo "checkout HEAD drifted from source_sha" >&2; exit 1; fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -327,6 +376,19 @@ jobs:
             fi
           done
           docker run --rm --user root --entrypoint sh "$CORE_REF" -c 'test ! -d /root/.npm && echo npm-cache-absent && test ! -d /tmp/node-compile-cache && echo compile-cache-absent' | tee qualification/hygiene-core.txt
+
+      - name: Core image carries no npm CLI (CVE-2026-59873 eliminated)
+        env:
+          CORE_REF: ${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}
+        run: |
+          docker run --rm --user root --entrypoint sh "$CORE_REF" -c '! command -v npm && ! command -v npx && ! test -d /usr/local/lib/node_modules/npm && echo npm-cli-absent' | tee qualification/core-no-npm.txt
+
+      - name: Sandbox tooling smoke and vendored tar >= 7.5.19
+        env:
+          LOCAL_REF: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}
+        run: |
+          docker run --rm --entrypoint sh "$LOCAL_REF" -c 'bash --version | head -1 && git --version && python3 --version && node --version && npm --version' | tee qualification/sandbox-tools.txt
+          docker run --rm --entrypoint node "$LOCAL_REF" -e "const v=require('/usr/local/lib/node_modules/npm/node_modules/tar/package.json').version;const p=v.split('.').map(Number);if(!(p[0]>7||(p[0]===7&&p[1]>5)||(p[0]===7&&p[1]===5&&p[2]>=19))){console.error('vendored tar',v,'below 7.5.19');process.exit(1)}console.log('vendored tar',v,'>=7.5.19')" | tee -a qualification/sandbox-tools.txt
 
       - name: Generate ephemeral qualification secrets (masked, CI-only)
         run: |
@@ -466,7 +528,7 @@ jobs:
 
       - name: Upload qualification artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: qualification
           path: qualification/
@@ -475,5 +537,5 @@ jobs:
       - name: Cleanup containers
         if: always()
         run: |
-          docker rm -f qm-core-qual qm-worker-qual 2>/dev/null || true
+          docker rm -f qm-core-qual qm-worker-qual 2>/dev/null || echo "cleanup: containers already gone"
           docker ps -a --filter "name=qm-" --format '{{.Names}}'

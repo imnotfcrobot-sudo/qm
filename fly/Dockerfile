@@ -2,6 +2,8 @@ FROM node:24-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83
 RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
       @anthropic-ai/claude-code@2.1.210 \
       @openai/codex@0.144.4
+RUN npm install -g npm@11.18.0 \
+  && node -e "const v=require('/usr/local/lib/node_modules/npm/node_modules/tar/package.json').version;const p=v.split('.').map(Number);if(!(p[0]>7||(p[0]===7&&p[1]>5)||(p[0]===7&&p[1]===5&&p[2]>=19)))throw new Error('vendored tar '+v+' below 7.5.19 (CVE-2026-59873)');console.log('npm',require('/usr/local/lib/node_modules/npm/package.json').version,'vendored tar',v)"
 
 FROM debian:12-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
