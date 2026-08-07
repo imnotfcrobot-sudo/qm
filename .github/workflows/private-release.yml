@@ -166,7 +166,7 @@ jobs:
           output-file: release-artifacts/sbom-sandbox-local.spdx.json
 
       - name: Trivy scan core
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
           format: json
@@ -175,7 +175,7 @@ jobs:
           exit-code: "0"
 
       - name: Trivy scan sandbox-base
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}
           format: json
@@ -184,7 +184,7 @@ jobs:
           exit-code: "0"
 
       - name: Trivy scan sandbox-local
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}
           format: json
