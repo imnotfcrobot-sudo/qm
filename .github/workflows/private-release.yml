@@ -34,7 +34,15 @@ jobs:
           ref: ${{ inputs.source_sha }}
 
       - id: meta
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
+          case "$SOURCE_SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "source_sha must be lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then echo "source_sha must be a full 40-char commit SHA" >&2; exit 1; fi
+          if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]; then echo "checkout HEAD drifted from source_sha" >&2; exit 1; fi
           echo "tree_sha=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
           echo "short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
@@ -139,7 +147,7 @@ jobs:
           docker pull "${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}"
           docker pull "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}"
 
-      - name: SBOM (SPDX) for all three images
+      - name: SBOM (SPDX) core
         uses: anchore/sbom-action@v0
         with:
           image: ${{ env.CORE_IMAGE }}@${{ steps.core.outputs.digest }}
@@ -190,12 +198,18 @@ jobs:
           docker buildx imagetools inspect "${{ env.SANDBOX_BASE_IMAGE }}@${{ steps.base.outputs.digest }}" --raw > release-artifacts/imagetools-sandbox-base.json
           docker buildx imagetools inspect "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ steps.local.outputs.digest }}" --raw > release-artifacts/imagetools-sandbox-local.json
           python3 - <<'PY'
-          import json, glob
+          import json, glob, sys
+          ok = True
           for f in sorted(glob.glob("release-artifacts/imagetools-*.json")):
               d = json.load(open(f))
               manifests = d.get("manifests", [])
               attest = [m for m in manifests if m.get("annotations", {}).get("vnd.docker.reference.type") == "attestation-manifest"]
               print(f, "attestation-manifests:", len(attest))
+              if len(attest) == 0:
+                  ok = False
+          if not ok:
+              print("expected SBOM+provenance attestations on every image", file=sys.stderr)
+              sys.exit(1)
           PY
 
       - name: Vulnerability summary
@@ -233,6 +247,13 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
 
+      - name: Pin verification
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then echo "source_sha must be a full 40-char commit SHA" >&2; exit 1; fi
+          if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]; then echo "checkout HEAD drifted from source_sha" >&2; exit 1; fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -251,17 +272,22 @@ jobs:
           docker pull "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}"
 
       - name: Inspect labels, user, env hygiene
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CORE_REF: ${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}
+          BASE_REF: ${{ env.SANDBOX_BASE_IMAGE }}@${{ needs.build.outputs.base_digest }}
+          LOCAL_REF: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}
         run: |
           python3 - <<'PY'
-          import json, subprocess, sys
-          sha = "${{ inputs.source_sha }}"
+          import json, os, subprocess, sys
+          sha = os.environ["SOURCE_SHA"]
           checks = {}
           def inspect(ref):
               return json.loads(subprocess.run(["docker", "inspect", ref], capture_output=True, text=True, check=True).stdout)[0]
           images = {
-              "core": "${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}",
-              "sandbox-base": "${{ env.SANDBOX_BASE_IMAGE }}@${{ needs.build.outputs.base_digest }}",
-              "sandbox-local": "${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}",
+              "core": os.environ["CORE_REF"],
+              "sandbox-base": os.environ["BASE_REF"],
+              "sandbox-local": os.environ["LOCAL_REF"],
           }
           report = {}
           for name, ref in images.items():
@@ -288,36 +314,56 @@ jobs:
           PY
 
       - name: No build credentials in layers/history
+        env:
+          CORE_REF: ${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}
+          BASE_REF: ${{ env.SANDBOX_BASE_IMAGE }}@${{ needs.build.outputs.base_digest }}
+          LOCAL_REF: ${{ env.SANDBOX_LOCAL_IMAGE }}@${{ needs.build.outputs.local_digest }}
         run: |
-          CORE="${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}"
-          docker history --no-trunc "$CORE" > qualification/history-core.txt
-          if grep -iE "GITHUB_TOKEN|ghp_|gho_|npm_[A-Za-z0-9]{30,}" qualification/history-core.txt; then
-            echo "credential pattern found in core history" >&2; exit 1
-          fi
-          docker run --rm --user root --entrypoint sh "$CORE" -c 'test ! -d /root/.npm && echo npm-cache-absent && test ! -d /tmp/node-compile-cache && echo compile-cache-absent' | tee qualification/hygiene-core.txt
+          for pair in "core:$CORE_REF" "sandbox-base:$BASE_REF" "sandbox-local:$LOCAL_REF"; do
+            name="${pair%%:*}"; ref="${pair#*:}"
+            docker history --no-trunc "$ref" > "qualification/history-${name}.txt"
+            if grep -iE "GITHUB_TOKEN|ghp_[A-Za-z0-9]|ghs_[A-Za-z0-9]|gho_[A-Za-z0-9]|ghu_[A-Za-z0-9]|ghr_[A-Za-z0-9]|github_pat_|npm_[A-Za-z0-9]{30,}" "qualification/history-${name}.txt"; then
+              echo "credential pattern found in ${name} history" >&2; exit 1
+            fi
+          done
+          docker run --rm --user root --entrypoint sh "$CORE_REF" -c 'test ! -d /root/.npm && echo npm-cache-absent && test ! -d /tmp/node-compile-cache && echo compile-cache-absent' | tee qualification/hygiene-core.txt
+
+      - name: Generate ephemeral qualification secrets (masked, CI-only)
+        run: |
+          for v in SMOKE_CORE_SECRET SMOKE_CAPABILITY_SECRET SMOKE_PORTAL_SECRET SMOKE_CONNECTOR_SECRET SMOKE_SKILL_SECRET; do
+            val="$(openssl rand -hex 32)"
+            echo "::add-mask::$val"
+            echo "${v}=${val}" >> "$GITHUB_ENV"
+          done
 
       - name: Start core and check /healthz
         run: |
-          SMOKE_SECRET="$(openssl rand -hex 32)"
-          echo "::add-mask::$SMOKE_SECRET"
-          echo "SMOKE_SECRET=$SMOKE_SECRET" >> "$GITHUB_ENV"
           CORE="${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}"
-          docker run -d --name qm-core-qual -e CORE_SIGNING_SECRET="$SMOKE_SECRET" -p 127.0.0.1:8080:8080 "$CORE"
+          docker run -d --name qm-core-qual \
+            -e CORE_SIGNING_SECRET="$SMOKE_CORE_SECRET" \
+            -e CAPABILITY_SECRET="$SMOKE_CAPABILITY_SECRET" \
+            -e PORTAL_IDENTITY_SECRET="$SMOKE_PORTAL_SECRET" \
+            -e CONNECTOR_SECRET_KEY="$SMOKE_CONNECTOR_SECRET" \
+            -e SKILL_SIGNING_SECRET="$SMOKE_SKILL_SECRET" \
+            -e SANDBOX_BACKEND=local \
+            -e HARNESS=pi \
+            -p 127.0.0.1:8080:8080 "$CORE"
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8080/healthz > qualification/healthz.json 2>/dev/null; then break; fi
             sleep 2
           done
+          if [ ! -s qualification/healthz.json ]; then docker logs qm-core-qual >&2; exit 1; fi
           cat qualification/healthz.json
           python3 -c "import json; d=json.load(open('qualification/healthz.json')); assert d.get('ok') is True, d"
 
       - name: Source Auth v0/v1 smoke
         run: |
-          cat > smoke-source-auth.ts <<'EOF'
-          import { signedRequestHeaders, signedRequestHeadersV1 } from "./src/auth/source-auth-sign.ts";
+          cat > qualification/smoke-source-auth.ts <<'EOF'
+          import { signedRequestHeaders, signedRequestHeadersV1 } from "../src/auth/source-auth-sign.ts";
           import { writeFileSync } from "node:fs";
 
           const base = "http://127.0.0.1:8080";
-          const secret = process.env.SMOKE_SECRET as string;
+          const secret = process.env.SMOKE_CORE_SECRET as string;
           const path = "/v1/turns?async=1";
           const body = JSON.stringify({ surface: "smoke", text: "auth probe" });
 
@@ -332,11 +378,11 @@ jobs:
             return { status: res.status, message: String(json.message ?? "") };
           }
           const authLayerRejected = (r: Result) =>
-            r.status === 401 && /signature|timestamp|nonce|duplicate|unsigned/i.test(r.message);
+            r.status === 401 && /signature|timestamp|nonce|duplicate|source-auth/i.test(r.message);
 
           const results: Record<string, unknown> = { probe: path };
           const unsigned = await send({});
-          results.unsigned_rejected = unsigned.status === 401 && /missing signature/i.test(unsigned.message);
+          results.unsigned_rejected = unsigned.status === 401 && /missing, invalid, or stale source-auth headers/i.test(unsigned.message);
           results.unsigned_response = unsigned;
 
           const v0 = await send(signedRequestHeaders(secret, "POST", path, body));
@@ -383,28 +429,40 @@ jobs:
           console.log(JSON.stringify(results, null, 2));
           if (!results.all) process.exit(1);
           EOF
-          node smoke-source-auth.ts
+          node qualification/smoke-source-auth.ts
 
       - name: Worker starts from the same core digest with its own command
         run: |
           CORE="${{ env.CORE_IMAGE }}@${{ needs.build.outputs.core_digest }}"
-          docker run -d --name qm-worker-qual -e CORE_SIGNING_SECRET="$SMOKE_SECRET" "$CORE" node src/runs/worker-main.ts
+          docker run -d --name qm-worker-qual \
+            -e CORE_SIGNING_SECRET="$SMOKE_CORE_SECRET" \
+            -e CAPABILITY_SECRET="$SMOKE_CAPABILITY_SECRET" \
+            -e PORTAL_IDENTITY_SECRET="$SMOKE_PORTAL_SECRET" \
+            -e CONNECTOR_SECRET_KEY="$SMOKE_CONNECTOR_SECRET" \
+            -e SKILL_SIGNING_SECRET="$SMOKE_SKILL_SECRET" \
+            -e SANDBOX_BACKEND=local \
+            -e HARNESS=pi \
+            "$CORE" node src/runs/worker-main.ts
           ok=""
           for i in $(seq 1 30); do
             if docker logs qm-worker-qual 2>&1 | grep -q "draining runs"; then ok=1; break; fi
             sleep 2
           done
-          docker logs qm-worker-qual > qualification/worker.log 2>&1 || true
-          if [ -z "$ok" ]; then echo "worker did not reach 'draining runs'" >&2; cat qualification/worker.log; exit 1; fi
+          if [ -z "$ok" ]; then echo "worker did not reach 'draining runs'" >&2; docker logs qm-worker-qual >&2; exit 1; fi
           docker stop qm-worker-qual > /dev/null
           docker logs qm-worker-qual > qualification/worker.log 2>&1
           grep -q "SIGTERM received, stopping" qualification/worker.log && echo "worker start/stop clean"
 
-      - name: Core container logs (no secrets, no crashes)
+      - name: Container logs carry no secrets
         run: |
           docker logs qm-core-qual > qualification/core.log 2>&1
-          if grep -iE "$SMOKE_SECRET" qualification/core.log; then echo "secret leaked into core log" >&2; exit 1; fi
-          tail -5 qualification/core.log
+          for f in qualification/core.log qualification/worker.log; do
+            for v in "$SMOKE_CORE_SECRET" "$SMOKE_CAPABILITY_SECRET" "$SMOKE_PORTAL_SECRET" "$SMOKE_CONNECTOR_SECRET" "$SMOKE_SKILL_SECRET"; do
+              if grep -qF "$v" "$f"; then echo "secret leaked into $f" >&2; exit 1; fi
+            done
+          done
+          echo "no secret material in container logs"
+          tail -3 qualification/core.log
 
       - name: Upload qualification artifacts
         if: always()
